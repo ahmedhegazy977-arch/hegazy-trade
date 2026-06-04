@@ -1,17 +1,26 @@
 {
-  "name": "hegazy-trade-pro",
+  "name": "hegazy-trade-bot",
   "version": "3.0.0",
-  "description": "Professional Egyptian Stock Market Bot",
+  "description": "Egyptian Stock Market Trading Bot",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node bot.js",
+    "test": "echo \"No tests specified\" && exit 0"
   },
+  "keywords": [
+    "telegram",
+    "bot",
+    "egyptian-stocks",
+    "trading"
+  ],
+  "author": "",
+  "license": "ISC",
   "dependencies": {
-    "node-telegram-bot-api": "0.61.0",
-    "axios": "1.6.0",
-    "cheerio": "1.0.0-rc.12"
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12",
+    "node-telegram-bot-api": "^0.61.0"
   },
   "engines": {
-    "node": "20.x"
+    "node": ">=18.0.0"
   }
 }
