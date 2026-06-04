@@ -6,17 +6,19 @@ const TOKEN = process.env.TOKEN;
 const bot = new TelegramBot(TOKEN, { polling: true });
 
 // تخزين البيانات
-const watchlist = new Map(); // قائمة المراقبة
-const alerts = new Map(); // التنبيهات
+const watchlist = new Map();
+const alerts = new Map();
 
-// ==================== دوال جلب البيانات ====================
+// ==================== جلب البيانات ====================
 
-// جلب البيانات التاريخية من Yahoo Finance
 async function getHistoricalData(symbol) {
   try {
     const ticker = `${symbol.toUpperCase()}.CA`;
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=1y&interval=1d`;
-    const { data } = await axios.get(url, { timeout: 10000 });
+    const { data } = await axios.get(url, { 
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      timeout: 10000 
+    });
     
     if (!data.chart || !data.chart.result || data.chart.result.length === 0) {
       return null;
@@ -24,29 +26,18 @@ async function getHistoricalData(symbol) {
     
     const result = data.chart.result[0];
     const quotes = result.indicators.quote[0];
-    const timestamps = result.timestamp;
     
     const closes = quotes.close.filter(c => c !== null);
     const volumes = quotes.volume.filter(v => v !== null);
     const opens = quotes.open.filter(o => o !== null);
-    const highs = quotes.high.filter(h => h !== null);
-    const lows = quotes.low.filter(l => l !== null);
     
-    return {
-      closes,
-      volumes,
-      opens,
-      highs,
-      lows,
-      timestamps
-    };
+    return { closes, volumes, opens };
   } catch (error) {
     console.error('Yahoo Finance Error:', error.message);
     return null;
   }
 }
 
-// جلب السعر اللحظي من Mubasher
 async function getCurrentPrice(symbol) {
   try {
     const url = `https://www.mubasher.info/markets/Egypt/stocks/${symbol.toUpperCase()}`;
@@ -56,8 +47,10 @@ async function getCurrentPrice(symbol) {
     });
     const $ = cheerio.load(data);
     
-    const price = parseFloat($('.stock-price__value').first().text().trim().replace(/,/g, ''));
-    const volume = parseInt($('.stock-price__volume').first().text().trim().replace(/,/g, ''));
+    const priceText = $('.stock-price__value').first().text().trim().replace(/,/g, '');
+    const price = parseFloat(priceText);
+    const volumeText = $('.stock-price__volume').first().text().trim().replace(/,/g, '');
+    const volume = parseInt(volumeText) || 0;
     
     return { price, volume };
   } catch (error) {
@@ -66,16 +59,14 @@ async function getCurrentPrice(symbol) {
   }
 }
 
-// ==================== دوال الحسابات الفنية ====================
+// ==================== الحسابات الفنية ====================
 
-// حساب المتوسط المتحرك البسيط SMA
 function calculateSMA(data, period) {
   if (data.length < period) return null;
   const slice = data.slice(-period);
   return slice.reduce((sum, val) => sum + val, 0) / period;
 }
 
-// حساب المتوسط المتحرك الأسي EMA
 function calculateEMA(data, period) {
   if (data.length < period) return null;
   const multiplier = 2 / (period + 1);
@@ -87,7 +78,6 @@ function calculateEMA(data, period) {
   return ema;
 }
 
-// حساب مؤشر القوة النسبية RSI
 function calculateRSI(closes, period = 14) {
   if (closes.length < period + 1) return null;
   
@@ -119,7 +109,6 @@ function calculateRSI(closes, period = 14) {
   return 100 - (100 / (1 + rs));
 }
 
-// حساب MACD
 function calculateMACD(closes) {
   const ema12 = calculateEMA(closes, 12);
   const ema26 = calculateEMA(closes, 26);
@@ -127,7 +116,6 @@ function calculateMACD(closes) {
   
   const macdLine = ema12 - ema26;
   
-  // حساب خط الإشارة (EMA 9 لـ MACD)
   const macdValues = [];
   for (let i = 26; i < closes.length; i++) {
     const e12 = calculateEMA(closes.slice(0, i + 1), 12);
@@ -144,25 +132,22 @@ function calculateMACD(closes) {
 // ==================== تطبيق الفلتر ====================
 
 async function applyFilter(symbol) {
-  // 1. جلب البيانات
   const historical = await getHistoricalData(symbol);
   const current = await getCurrentPrice(symbol);
   
   if (!historical || !current) {
-    return { success: false, message: '❌ فشل في جلب البيانات' };
+    return { success: false, message: 'فشل في جلب البيانات' };
   }
   
   const { closes, volumes, opens } = historical;
   const { price, volume } = current;
   
-  // 2. حساب المؤشرات
   const smaVolume20 = calculateSMA(volumes, 20);
   const ema50 = calculateEMA(closes, 50);
   const ema200 = calculateEMA(closes, 200);
   const rsi = calculateRSI(closes, 14);
   const macd = calculateMACD(closes);
   
-  // 3. تطبيق شروط الفلتر
   const results = {
     symbol: symbol.toUpperCase(),
     price,
@@ -180,10 +165,10 @@ async function applyFilter(symbol) {
   
   // الشرط 2: استقرار السعر
   const lastOpen = opens[opens.length - 1];
-  const priceStability = Math.abs(price - lastOpen) / price < 0.02;
+  const priceStability = lastOpen && (Math.abs(price - lastOpen) / price < 0.02);
   results.checks.stability = {
     pass: priceStability,
-    change: Math.abs(price - lastOpen) / price * 100
+    change: lastOpen ? (Math.abs(price - lastOpen) / price * 100) : null
   };
   
   // الشرط 3: الاتجاه
@@ -196,7 +181,7 @@ async function applyFilter(symbol) {
   };
   
   // الشرط 4: RSI
-  const rsiCondition = rsi >= 48 && rsi <= 55;
+  const rsiCondition = rsi !== null && rsi >= 48 && rsi <= 55;
   results.checks.rsi = {
     pass: rsiCondition,
     value: rsi
@@ -209,7 +194,6 @@ async function applyFilter(symbol) {
     histogram: macd ? macd.histogram : null
   };
   
-  // النتيجة النهائية
   results.passed = Object.values(results.checks).every(c => c.pass);
   results.passedCount = Object.values(results.checks).filter(c => c.pass).length;
   results.totalChecks = Object.keys(results.checks).length;
@@ -219,36 +203,21 @@ async function applyFilter(symbol) {
 
 // ==================== أوامر البوت ====================
 
-// أمر /ابدأ
 bot.onText(/\/ابدأ/, (msg) => {
-  bot.sendMessage(msg.chat.id, `👋 *أهلاً بك في بوت حجازي للتداول!*
-
-📊 *الأوامر المتاحة:*
-
-🔍 *فحص سهم:*
-/فحص SYMBOL - فحص سهم واحد (مثال: /فحص EFID)
-
-📋 *قائمة المراقبة:*
-/اضافة SYMBOL - إضافة سهم للقائمة
-/قائمة - عرض الأسهم المضافة
-/حذف SYMBOL - حذف سهم من القائمة
-
-🔔 *التنبيهات:*
-/تنبيه SYMBOL فوق سعر - تنبيه عند تجاوز سعر
-/تنبيه SYMBOL تحت سعر - تنبيه عند النزول تحت سعر
-/تنبيهات - عرض التنبيهات النشطة
-
-📈 *الفحص التلقائي:*
-/فحص_الكل - فحص كل الأسهم في القائمة
-
-💡 *مثال:*
-/فحص EFID`, { parse_mode: 'Markdown' });
+  bot.sendMessage(msg.chat.id, 
+    `👋 *أهلاً بك في بوت حجازي للتداول!*\n\n` +
+    `📊 *الأوامر المتاحة:*\n\n` +
+    `🔍 *فحص سهم:*\n/فحص SYMBOL\n\n` +
+    `📋 *قائمة المراقبة:*\n/اضافة SYMBOL\n/قائمة\n/حذف SYMBOL\n\n` +
+    ` *فحص الكل:*\n/فحص_الكل\n\n` +
+    ` *مثال:*\n/فحص EFID`,
+    { parse_mode: 'Markdown' }
+  );
 });
 
-// أمر /فحص
 bot.onText(/\/فحص\s+(\w+)/i, async (msg, match) => {
   const symbol = match[1].toUpperCase();
-  const loading = await bot.sendMessage(msg.chat.id, `🔍 جاري فحص ${symbol}...`);
+  const loading = await bot.sendMessage(msg.chat.id, `جاري فحص ${symbol}...`);
   
   const result = await applyFilter(symbol);
   
@@ -261,16 +230,13 @@ bot.onText(/\/فحص\s+(\w+)/i, async (msg, match) => {
   }
   
   const data = result.data;
-  const emoji = data.passed ? '✅' : '';
+  const emoji = data.passed ? '' : '📊';
   
   let message = `${emoji} *نتيجة فحص ${data.symbol}*\n\n`;
-  message += `💰 *السعر الحالي:* ${data.price} جنيه\n`;
+  message += ` *السعر الحالي:* ${data.price} جنيه\n`;
   message += `📊 *الحجم:* ${data.volume.toLocaleString()}\n\n`;
+  message += `*تفاصيل الفلتر:*\n━━━━━━━━━━━━━━━━\n`;
   
-  message += `*تفاصيل الفلتر:*\n`;
-  message += `━━━━━━━━━━━━━━━━\n`;
-  
-  // الحجم
   const volEmoji = data.checks.volume.pass ? '✅' : '❌';
   message += `${volEmoji} *الحجم:* ${data.checks.volume.value.toLocaleString()}`;
   if (data.checks.volume.threshold) {
@@ -278,21 +244,17 @@ bot.onText(/\/فحص\s+(\w+)/i, async (msg, match) => {
   }
   message += '\n';
   
-  // الاستقرار
   const stabEmoji = data.checks.stability.pass ? '✅' : '❌';
-  message += `${stabEmoji} *استقرار السعر:* ${data.checks.stability.change.toFixed(2)}% (مطلوب < 2%)\n`;
+  message += `${stabEmoji} *استقرار السعر:* ${data.checks.stability.change ? data.checks.stability.change.toFixed(2) + '%' : 'N/A'} (مطلوب < 2%)\n`;
   
-  // الاتجاه
   const trendEmoji = data.checks.trend.pass ? '✅' : '❌';
-  message += `${trendEmoji} *الاتجاه:* السعر ${data.checks.trend.price} | EMA50 ${data.checks.trend.ema50?.toFixed(2)} | EMA200 ${data.checks.trend.ema200?.toFixed(2)}\n`;
+  message += `${trendEmoji} *الاتجاه:* السعر ${data.checks.trend.price} | EMA50 ${data.checks.trend.ema50 ? data.checks.trend.ema50.toFixed(2) : 'N/A'} | EMA200 ${data.checks.trend.ema200 ? data.checks.trend.ema200.toFixed(2) : 'N/A'}\n`;
   
-  // RSI
   const rsiEmoji = data.checks.rsi.pass ? '✅' : '❌';
-  message += `${rsiEmoji} *RSI:* ${data.checks.rsi.value?.toFixed(2)} (مطلوب 48-55)\n`;
+  message += `${rsiEmoji} *RSI:* ${data.checks.rsi.value ? data.checks.rsi.value.toFixed(2) : 'N/A'} (مطلوب 48-55)\n`;
   
-  // MACD
   const macdEmoji = data.checks.macd.pass ? '✅' : '❌';
-  message += `${macdEmoji} *MACD:* ${data.checks.macd.histogram?.toFixed(4)} (مطلوب قريب من 0)\n`;
+  message += `${macdEmoji} *MACD:* ${data.checks.macd.histogram ? data.checks.macd.histogram.toFixed(4) : 'N/A'} (مطلوب قريب من 0)\n`;
   
   message += `━━━━━━━━━━━━━━━━\n`;
   message += `\n📊 *النتيجة:* ${data.passedCount}/${data.totalChecks} شروط محققة\n`;
@@ -310,7 +272,6 @@ bot.onText(/\/فحص\s+(\w+)/i, async (msg, match) => {
   });
 });
 
-// أمر /اضافة
 bot.onText(/\/اضافة\s+(\w+)/i, (msg, match) => {
   const symbol = match[1].toUpperCase();
   const chatId = msg.chat.id;
@@ -329,7 +290,6 @@ bot.onText(/\/اضافة\s+(\w+)/i, (msg, match) => {
   bot.sendMessage(msg.chat.id, `✅ تم إضافة *${symbol}* لقائمة المراقبة`, { parse_mode: 'Markdown' });
 });
 
-// أمر /قائمة
 bot.onText(/\/قائمة/, (msg) => {
   const chatId = msg.chat.id;
   const list = watchlist.get(chatId);
@@ -347,14 +307,13 @@ bot.onText(/\/قائمة/, (msg) => {
   bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
 });
 
-// أمر /حذف
 bot.onText(/\/حذف\s+(\w+)/i, (msg, match) => {
   const symbol = match[1].toUpperCase();
   const chatId = msg.chat.id;
   const list = watchlist.get(chatId);
   
   if (!list || !list.includes(symbol)) {
-    bot.sendMessage(msg.chat.id, ` ${symbol} غير موجود في القائمة`);
+    bot.sendMessage(msg.chat.id, `⚠️ ${symbol} غير موجود في القائمة`);
     return;
   }
   
@@ -363,7 +322,6 @@ bot.onText(/\/حذف\s+(\w+)/i, (msg, match) => {
   bot.sendMessage(msg.chat.id, `✅ تم حذف *${symbol}* من القائمة`, { parse_mode: 'Markdown' });
 });
 
-// أمر /فحص_الكل
 bot.onText(/\/فحص_الكل/, async (msg) => {
   const chatId = msg.chat.id;
   const list = watchlist.get(chatId);
@@ -373,7 +331,7 @@ bot.onText(/\/فحص_الكل/, async (msg) => {
     return;
   }
   
-  const loading = await bot.sendMessage(msg.chat.id, `🔍 جاري فحص ${list.length} سهم...`);
+  const loading = await bot.sendMessage(msg.chat.id, `جاري فحص ${list.length} سهم...`);
   
   let results = [];
   for (const symbol of list) {
@@ -383,11 +341,10 @@ bot.onText(/\/فحص_الكل/, async (msg) => {
     }
   }
   
-  // ترتيب حسب عدد الشروط المحققة
   results.sort((a, b) => b.passedCount - a.passedCount);
   
-  let message = '📊 *نتائج الفحص:*\n\n';
-  results.forEach((data, index) => {
+  let message = ' *نتائج الفحص:*\n\n';
+  results.forEach((data) => {
     const emoji = data.passed ? '🎉' : (data.passedCount >= 4 ? '✅' : '⚠️');
     message += `${emoji} *${data.symbol}*: ${data.passedCount}/${data.totalChecks}\n`;
     message += `   💰 ${data.price} جنيه\n\n`;
@@ -400,65 +357,28 @@ bot.onText(/\/فحص_الكل/, async (msg) => {
   });
 });
 
-// أمر /تنبيه
-bot.onText(/\/تنبيه\s+(\w+)\s+(فوق|تحت)\s+([\d.]+)/i, (msg, match) => {
-  const symbol = match[1].toUpperCase();
-  const type = match[2];
-  const price = parseFloat(match[3]);
-  const chatId = msg.chat.id;
-  
-  if (!alerts.has(chatId)) {
-    alerts.set(chatId, []);
-  }
-  
-  alerts.get(chatId).push({ symbol, type, price });
-  
-  bot.sendMessage(msg.chat.id, 
-    `✅ *تم إضافة التنبيه:*\n\n` +
-    `📊 السهم: *${symbol}*\n` +
-    ` السعر: *${price}* جنيه\n` +
-    `📈 النوع: ${type}\n\n` +
-    `_هنبعتلك تنبيه لما السعر يحقق الشرط!_`,
-    { parse_mode: 'Markdown' }
-  );
-});
-
-// أمر /تنبيهات
-bot.onText(/\/تنبيهات/, (msg) => {
-  const chatId = msg.chat.id;
-  const userAlerts = alerts.get(chatId);
-  
-  if (!userAlerts || userAlerts.length === 0) {
-    bot.sendMessage(msg.chat.id, '📭 مفيش تنبيهات نشطة');
-    return;
-  }
-  
-  let message = ' *التنبيهات النشطة:*\n\n';
-  userAlerts.forEach((alert, index) => {
-    message += `${index + 1}. *${alert.symbol}* - ${alert.type} *${alert.price}* جنيه\n`;
-  });
-  
-  bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
-});
-
 // فحص دوري كل ساعة
 setInterval(async () => {
   console.log('Running periodic check...');
   
   for (const [chatId, list] of watchlist) {
     for (const symbol of list) {
-      const result = await applyFilter(symbol);
-      if (result.success && result.data.passed) {
-        const data = result.data;
-        bot.sendMessage(chatId, 
-          ` *تنبيه! ${data.symbol} يحقق شروط الفلتر!*\n\n` +
-          `💰 السعر: ${data.price} جنيه\n` +
-          `📊 محقق ${data.passedCount}/${data.totalChecks} شروط`,
-          { parse_mode: 'Markdown' }
-        );
+      try {
+        const result = await applyFilter(symbol);
+        if (result.success && result.data.passed) {
+          const data = result.data;
+          bot.sendMessage(chatId, 
+            `🚨 *تنبيه! ${data.symbol} يحقق شروط الفلتر!*\n\n` +
+            `💰 السعر: ${data.price} جنيه\n` +
+            `📊 محقق ${data.passedCount}/${data.totalChecks} شروط`,
+            { parse_mode: 'Markdown' }
+          );
+        }
+      } catch (error) {
+        console.error('Periodic check error:', error);
       }
     }
   }
-}, 60 * 60 * 1000); // كل ساعة
+}, 60 * 60 * 1000);
 
 console.log('✅ Hegazy Trade Bot (Arabic) is running...');
