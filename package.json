@@ -2,7 +2,7 @@
   "name": "hegazy-trade",
   "version": "1.0.0",
   "description": "Hegazy Trade Bot",
-  "main": "index.js",
+  "main": "main": "bot.js"
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -24,3 +24,4 @@
     "node-telegram-bot-api": "^0.67.0"
   }
 }
+"start": "node bot.js"
