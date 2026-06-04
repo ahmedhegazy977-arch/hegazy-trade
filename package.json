@@ -1,7 +1,7 @@
 {
   "name": "hegazy-trade-pro",
   "version": "3.0.0",
-  "description": "Professional EGX Bot: Real-time, Technical Screener, S/R Alerts & Market Scan",
+  "description": "Professional Egyptian Stock Market Bot",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
@@ -12,6 +12,6 @@
     "cheerio": "1.0.0-rc.12"
   },
   "engines": {
-    "node": "18.x"
+    "node": "20.x"
   }
 }
