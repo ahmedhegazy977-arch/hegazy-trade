@@ -1,5 +1,5 @@
 {
-  "name": "hegazy-trade-stable",
+  "name": "hegazy-trade",
   "version": "1.0.0",
   "main": "bot.js",
   "scripts": {
@@ -7,7 +7,8 @@
   },
   "dependencies": {
     "node-telegram-bot-api": "0.61.0",
-    "axios": "1.6.0"
+    "axios": "1.6.0",
+    "cheerio": "1.0.0-rc.12"
   },
   "engines": {
     "node": "20.x"
