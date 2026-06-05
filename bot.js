@@ -6,7 +6,6 @@ const bot = new TelegramBot(TOKEN, { polling: true });
 
 const watchlist = new Map();
 
-// رموز Yahoo Finance للأسهم المصرية (.CA)
 const STOCKS = {
   'EFID': 'EFID.CA',
   'COMI': 'COMI.CA',
@@ -27,15 +26,14 @@ const STOCKS = {
 
 async function getPrice(symbol) {
   const ticker = STOCKS[symbol.toUpperCase()];
-  if (!ticker) return { err: '❌ الرمز غير مدعوم' };
+  if (!ticker) return { err: 'Symbol not supported' };
 
   try {
-    // رابط Yahoo Finance المباشر
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=1d&interval=1m`;
     
     const { data } = await axios.get(url, {
       headers: { 
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
         'Accept': 'application/json'
       },
       timeout: 10000
@@ -43,7 +41,7 @@ async function getPrice(symbol) {
 
     const result = data.chart?.result?.[0];
     if (!result || !result.meta) {
-      return { err: '❌ لا توجد بيانات لهذا السهم' };
+      return { err: 'No data available' };
     }
 
     const meta = result.meta;
@@ -59,66 +57,85 @@ async function getPrice(symbol) {
         price: currentPrice.toFixed(2),
         change: change.toFixed(2),
         changePercent: changePercent.toFixed(2) + '%',
-        currency: meta.currency || 'EGP',
-        source: 'Yahoo Finance'
+        currency: meta.currency || 'EGP'
       }
     };
   } catch (e) {
-    return { err: `❌ خطأ: ${e.message}` };
+    return { err: 'Connection error: ' + e.message };
   }
 }
 
-// الأوامر
-bot.onText(/^\/(start|ابدأ)$/, (msg) => {
-  bot.sendMessage(msg.chat.id, 
-    ` <b>بوت حجازي تريد (Yahoo)</b>\n\n` +
-    `/سعر SYMBOL - سعر السهم\n` +
-    `/اضافة SYMBOL - للمراقبة\n` +
-    `/قائمتي - عرض القائمة\n\n` +
-    `مثال: <code>/سعر EFID</code>`, 
-    { parse_mode: 'HTML' }
-  );
+// Commands
+bot.onText(/^\/start$/i, (msg) => {
+  const text = 'Welcome to Hegazy Trade Bot!\n\n' +
+               'Commands:\n' +
+               '/price SYMBOL - Get stock price\n' +
+               '/add SYMBOL - Add to watchlist\n' +
+               '/list - View watchlist\n\n' +
+               'Example: /price EFID';
+  bot.sendMessage(msg.chat.id, text);
 });
 
-bot.onText(/^\/سعر\s+(\w+)$/i, async (msg, match) => {
-  const sym = match[1].toUpperCase();
-  const load = await bot.sendMessage(msg.chat.id, `⏳ ${sym}...`);
-  const r = await getPrice(sym);
+bot.onText(/^\/price\s+(\w+)$/i, async (msg, match) => {
+  const symbol = match[1].toUpperCase();
+  const loadMsg = await bot.sendMessage(msg.chat.id, 'Loading...');
+  
+  const result = await getPrice(symbol);
+  
+  if (result.err) {
+    return bot.editMessageText(result.err, {
+      chat_id: msg.chat.id,
+      message_id: loadMsg.message_id
+    });
+  }
 
-  if (r.err) return bot.editMessageText(r.err, { chat_id: msg.chat.id, message_id: load.message_id });
-
-  const d = r.data;
+  const d = result.data;
   const icon = parseFloat(d.change) >= 0 ? '📈' : '📉';
-  const txt = `📊 <b>${d.symbol}</b>\n` +
-              `💰 السعر: <b>${d.price}</b> ${d.currency}\n` +
-              `${icon} التغيير: ${d.change} (${d.changePercent})\n` +
-              `📡 المصدر: ${d.source}`;
+  
+  const text = `${d.symbol}\n` +
+               `Price: ${d.price} ${d.currency}\n` +
+               `${icon} Change: ${d.change} (${d.changePercent})\n` +
+               'Source: Yahoo Finance';
 
-  bot.editMessageText(txt, { chat_id: msg.chat.id, message_id: load.message_id, parse_mode: 'HTML' });
+  bot.editMessageText(text, {
+    chat_id: msg.chat.id,
+    message_id: loadMsg.message_id
+  });
 });
 
-bot.onText(/^\/اضافة\s+(\w+)$/i, (msg, match) => {
-  const sym = match[1].toUpperCase();
-  const cid = msg.chat.id;
-  if (!STOCKS[sym]) return bot.sendMessage(msg.chat.id, '❌ رمز غير مدعوم');
+bot.onText(/^\/add\s+(\w+)$/i, (msg, match) => {
+  const symbol = match[1].toUpperCase();
+  const chatId = msg.chat.id;
   
-  if (!watchlist.has(cid)) watchlist.set(cid, []);
-  const list = watchlist.get(cid);
+  if (!STOCKS[symbol]) {
+    return bot.sendMessage(msg.chat.id, 'Symbol not supported');
+  }
   
-  if (!list.includes(sym)) {
-    list.push(sym);
-    bot.sendMessage(msg.chat.id, `✅ أضيف ${sym}`);
+  if (!watchlist.has(chatId)) {
+    watchlist.set(chatId, []);
+  }
+  
+  const list = watchlist.get(chatId);
+  
+  if (!list.includes(symbol)) {
+    list.push(symbol);
+    bot.sendMessage(msg.chat.id, `Added ${symbol} to watchlist`);
   } else {
-    bot.sendMessage(msg.chat.id, '⚠️ موجود');
+    bot.sendMessage(msg.chat.id, `${symbol} already exists`);
   }
 });
 
-bot.onText(/^\/قائمتي$/, (msg) => {
+bot.onText(/^\/list$/i, (msg) => {
   const list = watchlist.get(msg.chat.id) || [];
-  bot.sendMessage(msg.chat.id, 
-    list.length ? `👀 <b>مراقبتك:</b>\n${list.map((s,i)=>`${i+1}. ${s}`).join('\n')}` : '📭 فارغة', 
-    { parse_mode: 'HTML' }
-  );
+  
+  if (list.length === 0) {
+    return bot.sendMessage(msg.chat.id, 'Watchlist is empty');
+  }
+  
+  const text = 'Your Watchlist:\n' + 
+               list.map((s, i) => `${i + 1}. ${s}`).join('\n');
+  
+  bot.sendMessage(msg.chat.id, text);
 });
 
-console.log('✅ Bot Running (Yahoo Finance Direct)');
+console.log('Bot started successfully');
