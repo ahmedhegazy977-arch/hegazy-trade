@@ -2,90 +2,123 @@ const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 
 const TOKEN = process.env.TOKEN;
+const API_KEY = process.env.TWELVE_API_KEY;
 const bot = new TelegramBot(TOKEN, { polling: true });
 
 const watchlist = new Map();
-const priceAlerts = new Map();
 
-// قائمة الأسهم
-const EGX_LIST = ['COMI','EFID','ETEL','SWDY','HRHO','ESRS','PHDC','TMGH','ORWE','EAST','OCDI','EGBN','AMOC','ISPH','HELI','MNHD','OBEL','PHCI','RMDA','SODIC'];
+// قائمة الأسهم المصرية (رموز Twelve Data)
+const EGX_STOCKS = {
+  'EFID': 'EFID.EGX',
+  'COMI': 'COMI.EGX',
+  'ETEL': 'ETEL.EGX',
+  'SWDY': 'SWDY.EGX',
+  'HRHO': 'HRHO.EGX',
+  'ESRS': 'ESRS.EGX',
+  'PHDC': 'PHDC.EGX',
+  'TMGH': 'TMGH.EGX',
+  'EAST': 'EAST.EGX',
+  'EGBN': 'EGBN.EGX',
+  'OCDI': 'OCDI.EGX',
+  'ISPH': 'ISPH.EGX',
+  'HELI': 'HELI.EGX',
+  'MNHD': 'MNHD.EGX',
+  'OBEL': 'OBEL.EGX',
+  'PHCI': 'PHCI.EGX',
+  'RMDA': 'RMDA.EGX',
+  'SODIC': 'SODIC.EGX'
+};
 
-// جلب السعر - طريقة أبسط
+// جلب السعر من Twelve Data
 async function getPrice(symbol) {
   const sym = symbol.toUpperCase();
+  const ticker = EGX_STOCKS[sym];
+  
+  if(!ticker) {
+    return { error: `❌ ${sym} غير موجود في القائمة` };
+  }
   
   try {
-    // الطريقة 1: API بديل (مجاني)
-    const url = `https://api.example.com/stocks/${sym}`; // هنبدله برابط شغال
+    const url = `https://api.twelvedata.com/price?symbol=${ticker}&apikey=${API_KEY}`;
+    const response = await axios.get(url, { timeout: 10000 });
     
-    // نجرب Mubasher API لو موجود
-    const response = await axios.get(`https://www.mubasher.info/api/markets/EGX/stocks/${sym}/ticker`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0',
-        'Accept': 'application/json'
-      },
-      timeout: 8000
-    }).catch(() => null);
-    
-    if(response && response.data) {
+    if(response.data.price) {
       return {
-        price: response.data.last || response.data.price,
-        source: 'Mubasher API'
+        price: parseFloat(response.data.price),
+        symbol: sym,
+        source: 'Twelve Data'
       };
     }
     
-    // الطريقة 2: Yahoo Finance
-    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}.CA?range=1d&interval=1m`;
-    const yahooResp = await axios.get(yahooUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      timeout: 8000
-    }).catch(() => null);
-    
-    if(yahooResp && yahooResp.data.chart?.result?.[0]?.meta?.regularMarketPrice) {
-      return {
-        price: yahooResp.data.chart.result[0].meta.regularMarketPrice,
-        source: 'Yahoo'
-      };
-    }
-    
-    return null;
+    return { error: `❌ فشل في جلب ${sym}` };
   } catch(e) {
-    console.error(`Error fetching ${sym}:`, e.message);
-    return null;
+    console.error(`Error ${sym}:`, e.message);
+    return { error: `❌ خطأ في الاتصال` };
   }
 }
 
-// أمر البدء
+// جلب بيانات كاملة
+async function getQuote(symbol) {
+  const sym = symbol.toUpperCase();
+  const ticker = EGX_STOCKS[sym];
+  
+  if(!ticker) return { error: `غير موجود` };
+  
+  try {
+    const url = `https://api.twelvedata.com/quote?symbol=${ticker}&apikey=${API_KEY}`;
+    const response = await axios.get(url, { timeout: 10000 });
+    const d = response.data;
+    
+    if(d.symbol) {
+      return {
+        symbol: d.symbol,
+        price: parseFloat(d.price),
+        change: parseFloat(d.change),
+        changePercent: parseFloat(d.change_percent),
+        high: parseFloat(d.high),
+        low: parseFloat(d.low),
+        open: parseFloat(d.open),
+        previousClose: parseFloat(d.previous_close),
+        volume: parseInt(d.volume || 0)
+      };
+    }
+    
+    return { error: `فشل` };
+  } catch(e) {
+    return { error: `خطأ` };
+  }
+}
+
+// الأوامر
 bot.onText(/\/(start|ابدأ)/, (msg) => {
   bot.sendMessage(msg.chat.id, 
     `🚀 *بوت حجازي للتداول*\n\n` +
     `📊 الأوامر:\n` +
     `/price SYMBOL - سعر السهم\n` +
-    `/فحص SYMBOL - فحص سهم\n` +
+    `/quote SYMBOL - بيانات كاملة\n` +
     `/مسح - مسح السوق\n` +
     `/اضافة SYMBOL - إضافة للمراقبة\n` +
-    `/قائمة - قائمة المراقبة\n\n` +
+    `/قائمة - القائمة\n\n` +
     `مثال: /price EFID`,
     { parse_mode: 'Markdown' }
   );
 });
 
-// أمر السعر
 bot.onText(/\/price\s+(\w+)/i, async (msg, match) => {
   const symbol = match[1].toUpperCase();
-  const loading = await bot.sendMessage(msg.chat.id, `⏳ جاري جلب ${symbol}...`);
+  const loading = await bot.sendMessage(msg.chat.id, `⏳ ${symbol}...`);
   
   const data = await getPrice(symbol);
   
-  if(!data) {
-    return bot.editMessageText(`❌ فشل في جلب بيانات ${symbol}`, {
+  if(data.error) {
+    return bot.editMessageText(data.error, {
       chat_id: msg.chat.id,
       message_id: loading.message_id
     });
   }
   
   bot.editMessageText(
-    `📊 *${symbol}*\n💰 السعر: ${data.price} جنيه\n📡 المصدر: ${data.source}`,
+    `📊 *${data.symbol}*\n💰 ${data.price} جنيه\n📡 ${data.source}`,
     {
       chat_id: msg.chat.id,
       message_id: loading.message_id,
@@ -94,22 +127,31 @@ bot.onText(/\/price\s+(\w+)/i, async (msg, match) => {
   );
 });
 
-// أمر الفحص المبسط
-bot.onText(/\/فحص\s+(\w+)/i, async (msg, match) => {
+bot.onText(/\/quote\s+(\w+)/i, async (msg, match) => {
   const symbol = match[1].toUpperCase();
-  const loading = await bot.sendMessage(msg.chat.id, `🔍 فحص ${symbol}...`);
+  const loading = await bot.sendMessage(msg.chat.id, `⏳ ${symbol}...`);
   
-  const data = await getPrice(symbol);
+  const data = await getQuote(symbol);
   
-  if(!data) {
-    return bot.editMessageText(`❌ فشل في جلب ${symbol}`, {
+  if(data.error) {
+    return bot.editMessageText(`❌ ${data.error}`, {
       chat_id: msg.chat.id,
       message_id: loading.message_id
     });
   }
   
+  const changeEmoji = data.change >= 0 ? '📈' : '📉';
+  const changeSign = data.change >= 0 ? '+' : '';
+  
   bot.editMessageText(
-    `📊 *${symbol}*\n💰 ${data.price} جنيه\n📡 ${data.source}\n\n⚠️ البيانات الأساسية متاحة قريباً`,
+    `📊 *${data.symbol}*\n\n` +
+    `💰 السعر: ${data.price} جنيه\n` +
+    `${changeEmoji} التغيير: ${changeSign}${data.change} (${changeSign}${data.changePercent}%)\n` +
+    `📊 الافتتاح: ${data.open}\n` +
+    `📈 الأعلى: ${data.high}\n` +
+    `📉 الأدنى: ${data.low}\n` +
+    `📅 الإغلاق السابق: ${data.previousClose}\n` +
+    `📊 الحجم: ${data.volume.toLocaleString()}`,
     {
       chat_id: msg.chat.id,
       message_id: loading.message_id,
@@ -118,20 +160,19 @@ bot.onText(/\/فحص\s+(\w+)/i, async (msg, match) => {
   );
 });
 
-// أمر المسح السريع
 bot.onText(/\/مسح/, async (msg) => {
-  const loading = await bot.sendMessage(msg.chat.id, '📊 جاري مسح السوق...');
+  const loading = await bot.sendMessage(msg.chat.id, '📊 مسح السوق...');
   
   let results = [];
-  for(const sym of EGX_LIST.slice(0, 10)) { // أول 10 أسهم فقط
+  for(const [sym, ticker] of Object.entries(EGX_STOCKS).slice(0, 10)) {
     const data = await getPrice(sym);
-    if(data) {
+    if(!data.error) {
       results.push(`${sym}: ${data.price}`);
     }
   }
   
   bot.editMessageText(
-    `📊 *نتائج المسح:*\n\n` + results.join('\n') || '❌ فشل في جلب البيانات',
+    `📊 *السوق المصري*\n\n` + results.join('\n'),
     {
       chat_id: msg.chat.id,
       message_id: loading.message_id,
@@ -140,7 +181,6 @@ bot.onText(/\/مسح/, async (msg) => {
   );
 });
 
-// قائمة المراقبة
 bot.onText(/\/اضافة\s+(\w+)/i, (msg, match) => {
   const symbol = match[1].toUpperCase();
   const chatId = msg.chat.id;
@@ -152,16 +192,16 @@ bot.onText(/\/اضافة\s+(\w+)/i, (msg, match) => {
     list.push(symbol);
     bot.sendMessage(msg.chat.id, `✅ أضيف ${symbol}`);
   } else {
-    bot.sendMessage(msg.chat.id, `⚠️ ${symbol} موجود بالفعل`);
+    bot.sendMessage(msg.chat.id, `⚠️ ${symbol} موجود`);
   }
 });
 
 bot.onText(/\/قائمة/, (msg) => {
   const list = watchlist.get(msg.chat.id) || [];
   bot.sendMessage(msg.chat.id, 
-    list.length ? '📋 *قائمة المراقبة:*\n' + list.map((s,i)=>`${i+1}. ${s}`).join('\n') : '📭 فارغة',
+    list.length ? '📋 *القائمة:*\n' + list.map((s,i)=>`${i+1}. ${s}`).join('\n') : '📭 فارغة',
     { parse_mode: 'Markdown' }
   );
 });
 
-console.log('✅ Bot Started - Simplified Version');
+console.log('✅ Bot Started with Twelve Data API');
