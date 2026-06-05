@@ -45,10 +45,13 @@ async function getPrice(symbol) {
     }
 
     const meta = result.meta;
-    const currentPrice = meta.regularMarketPrice;
-    const prevClose = meta.previousClose;
+    const currentPrice = meta.regularMarketPrice || 0;
+    
+    //  Fallback آمن لو previousClose مش موجود
+    const prevClose = meta.previousClose || meta.regularMarketPreviousClose || meta.chartPreviousClose || currentPrice;
+    
     const change = currentPrice - prevClose;
-    const changePercent = (change / prevClose) * 100;
+    const changePercent = prevClose ? ((change / prevClose) * 100).toFixed(2) + '%' : '0.00%';
 
     return {
       ok: true,
@@ -56,7 +59,7 @@ async function getPrice(symbol) {
         symbol: symbol.toUpperCase(),
         price: currentPrice.toFixed(2),
         change: change.toFixed(2),
-        changePercent: changePercent.toFixed(2) + '%',
+        changePercent: changePercent,
         currency: meta.currency || 'EGP'
       }
     };
@@ -67,23 +70,23 @@ async function getPrice(symbol) {
 
 // Commands
 bot.onText(/^\/start$/i, (msg) => {
-  const text = 'Welcome to Hegazy Trade Bot!\n\n' +
-               'Commands:\n' +
-               '/price SYMBOL - Get stock price\n' +
+  const text = ' Hegazy Trade Bot Active!\n\n' +
+               '📊 Commands:\n' +
+               '/price SYMBOL - Get live price\n' +
                '/add SYMBOL - Add to watchlist\n' +
                '/list - View watchlist\n\n' +
-               'Example: /price EFID';
+               '💡 Example: /price EFID';
   bot.sendMessage(msg.chat.id, text);
 });
 
 bot.onText(/^\/price\s+(\w+)$/i, async (msg, match) => {
   const symbol = match[1].toUpperCase();
-  const loadMsg = await bot.sendMessage(msg.chat.id, 'Loading...');
+  const loadMsg = await bot.sendMessage(msg.chat.id, '⏳ Loading...');
   
   const result = await getPrice(symbol);
   
   if (result.err) {
-    return bot.editMessageText(result.err, {
+    return bot.editMessageText(`❌ ${result.err}`, {
       chat_id: msg.chat.id,
       message_id: loadMsg.message_id
     });
@@ -92,14 +95,15 @@ bot.onText(/^\/price\s+(\w+)$/i, async (msg, match) => {
   const d = result.data;
   const icon = parseFloat(d.change) >= 0 ? '📈' : '📉';
   
-  const text = `${d.symbol}\n` +
-               `Price: ${d.price} ${d.currency}\n` +
-               `${icon} Change: ${d.change} (${d.changePercent})\n` +
-               'Source: Yahoo Finance';
+  const text = `📊 *${d.symbol}*\n` +
+               `💰 Price: *${d.price}* ${d.currency}\n` +
+               `${icon} Change: *${d.change}* (${d.changePercent})\n` +
+               `🌐 Source: Yahoo Finance`;
 
   bot.editMessageText(text, {
     chat_id: msg.chat.id,
-    message_id: loadMsg.message_id
+    message_id: loadMsg.message_id,
+    parse_mode: 'Markdown'
   });
 });
 
@@ -108,34 +112,27 @@ bot.onText(/^\/add\s+(\w+)$/i, (msg, match) => {
   const chatId = msg.chat.id;
   
   if (!STOCKS[symbol]) {
-    return bot.sendMessage(msg.chat.id, 'Symbol not supported');
+    return bot.sendMessage(msg.chat.id, '❌ Symbol not supported');
   }
   
-  if (!watchlist.has(chatId)) {
-    watchlist.set(chatId, []);
-  }
-  
+  if (!watchlist.has(chatId)) watchlist.set(chatId, []);
   const list = watchlist.get(chatId);
   
   if (!list.includes(symbol)) {
     list.push(symbol);
-    bot.sendMessage(msg.chat.id, `Added ${symbol} to watchlist`);
+    bot.sendMessage(msg.chat.id, `✅ Added ${symbol} to watchlist`);
   } else {
-    bot.sendMessage(msg.chat.id, `${symbol} already exists`);
+    bot.sendMessage(msg.chat.id, `⚠️ ${symbol} already exists`);
   }
 });
 
 bot.onText(/^\/list$/i, (msg) => {
   const list = watchlist.get(msg.chat.id) || [];
+  if (list.length === 0) return bot.sendMessage(msg.chat.id, '📭 Watchlist is empty');
   
-  if (list.length === 0) {
-    return bot.sendMessage(msg.chat.id, 'Watchlist is empty');
-  }
-  
-  const text = 'Your Watchlist:\n' + 
-               list.map((s, i) => `${i + 1}. ${s}`).join('\n');
-  
-  bot.sendMessage(msg.chat.id, text);
+  const text = ' *Your Watchlist:*\n' + 
+               list.map((s, i) => `${i + 1}. *${s}*`).join('\n');
+  bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
 });
 
-console.log('Bot started successfully');
+console.log('✅ Bot Started - Stable v1.1 (NaN Fixed)');
