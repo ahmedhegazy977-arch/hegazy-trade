@@ -4,59 +4,42 @@ const axios = require('axios');
 const TOKEN = process.env.TOKEN;
 const bot = new TelegramBot(TOKEN, { polling: true });
 
-// ====== تخزين مؤقت ذكي (يقلل الطلبات ويحمي من الحظر) ======
 const cache = new Map();
-const CACHE_TTL = 2 * 60 * 1000; // دقيقتين
+const CACHE_TTL = 5 * 60 * 1000; // 5 دقائق
 
-function getCached(symbol) {
-  const item = cache.get(symbol);
-  if (item && Date.now() - item.time < CACHE_TTL) return item.data;
-  return null;
+function getCached(sym) {
+  const item = cache.get(sym);
+  return (item && Date.now() - item.time < CACHE_TTL) ? item.data : null;
 }
+function setCache(sym, data) { cache.set(sym, { data, time: Date.now() }); }
 
-function setCache(symbol, data) {
-  cache.set(symbol, { data, time: Date.now() });
-  // تنظيف الكاش القديم تلقائياً
-  if (cache.size > 200) {
-    const keys = Array.from(cache.keys());
-    cache.delete(keys[0]);
-  }
-}
-
-// ====== قائمة شاملة للأسهم المصرية (Yahoo Finance) ======
+// كل أسهم البورصة المصرية (رموز TradingView الرسمية)
 const STOCKS = {
-  'COMI':'COMI.CA','EGBN':'EGBN.CA','ABUK':'ABUK.CA','ALEX':'ALEX.CA','CAIB':'CAIB.CA',
-  'CIHB':'CIHB.CA','EBNK':'EBNK.CA','EKBN':'EKBN.CA','NSGB':'NSGB.CA','SAIB':'SAIB.CA',
-  'PHDC':'PHDC.CA','TMGH':'TMGH.CA','SODIC':'SODIC.CA','MNHD':'MNHD.CA','OBEL':'OBEL.CA',
-  'OCDI':'OCDI.CA','FWRY':'FWRY.CA','EKHO':'EKHO.CA','EKZN':'EKZN.CA','HELI':'HELI.CA',
-  'LXIN':'LXIN.CA','MOPH':'MOPH.CA','NILE':'NILE.CA','QALY':'QALY.CA','PALM':'PALM.CA',
-  'EFID':'EFID.CA','EAST':'EAST.CA','ORWE':'ORWE.CA','JUFO':'JUFO.CA','ZMZA':'ZMZA.CA',
-  'KARO':'KARO.CA','HOD':'HOD.CA','DOMT':'DOMT.CA','PHCI':'PHCI.CA','RMDA':'RMDA.CA',
-  'ISPH':'ISPH.CA','UNIP':'UNIP.CA','MKPH':'MKPH.CA','EIPIC':'EIPIC.CA','ETEL':'ETEL.CA',
-  'TELS':'TELS.CA','ITPAC':'ITPAC.CA','SWDY':'SWDY.CA','HRHO':'HRHO.CA','ESRS':'ESRS.CA',
-  'MCDR':'MCDR.CA','SKPC':'SKPC.CA','APPC':'APPC.CA','OLFI':'OLFI.CA','TALM':'TALM.CA',
-  'UPFD':'UPFD.CA','WUFA':'WUFA.CA','YRGN':'YRGN.CA','ZOD':'ZOD.CA','INEG':'INEG.CA',
-  'LUTS':'LUTS.CA','AGRI':'AGRI.CA','CEMI':'CEMI.CA','CHEM':'CHEM.CA','CLHO':'CLHO.CA',
-  'EGAS':'EGAS.CA','ETRA':'ETRA.CA','FERT':'FERT.CA','GAS':'GAS.CA','GLBC':'GLBC.CA',
-  'IRON':'IRON.CA','MINA':'MINA.CA','MNQC':'MNQC.CA','PACK':'PACK.CA','PAPR':'PAPR.CA',
-  'PLAS':'PLAS.CA','POLY':'POLY.CA','RUBR':'RUBR.CA','SAND':'SAND.CA','SHMD':'SHMD.CA',
-  'STLT':'STLT.CA','TEXT':'TEXT.CA','TILE':'TILE.CA','TIMB':'TIMB.CA','AUTO':'AUTO.CA',
-  'SPIN':'SPIN.CA','EGTS':'EGTS.CA','THMD':'THMD.CA','ALHE':'ALHE.CA','HOTL':'HOTL.CA',
-  'TOUR':'TOUR.CA','TRVL':'TRVL.CA','ELEC':'ELEC.CA','ENER':'ENER.CA','FINS':'FINS.CA',
-  'HOLD':'HOLD.CA','INVS':'INVS.CA','LEAS':'LEAS.CA','REIT':'REIT.CA','SUKN':'SUKN.CA'
+  'COMI':'EGX:COMI','EGBN':'EGX:EGBN','ABUK':'EGX:ABUK','ALEX':'EGX:ALEX','CAIB':'EGX:CAIB',
+  'CIHB':'EGX:CIHB','EBNK':'EGX:EBNK','EKBN':'EGX:EKBN','NSGB':'EGX:NSGB','SAIB':'EGX:SAIB',
+  'PHDC':'EGX:PHDC','TMGH':'EGX:TMGH','SODIC':'EGX:SODIC','MNHD':'EGX:MNHD','OBEL':'EGX:OBEL',
+  'OCDI':'EGX:OCDI','FWRY':'EGX:FWRY','EKHO':'EGX:EKHO','EKZN':'EGX:EKZN','HELI':'EGX:HELI',
+  'LXIN':'EGX:LXIN','MOPH':'EGX:MOPH','NILE':'EGX:NILE','QALY':'EGX:QALY','PALM':'EGX:PALM',
+  'EFID':'EGX:EFID','EAST':'EGX:EAST','ORWE':'EGX:ORWE','JUFO':'EGX:JUFO','ZMZA':'EGX:ZMZA',
+  'KARO':'EGX:KARO','HOD':'EGX:HOD','DOMT':'EGX:DOMT','PHCI':'EGX:PHCI','RMDA':'EGX:RMDA',
+  'ISPH':'EGX:ISPH','UNIP':'EGX:UNIP','MKPH':'EGX:MKPH','EIPIC':'EGX:EIPIC','ETEL':'EGX:ETEL',
+  'TELS':'EGX:TELS','ITPAC':'EGX:ITPAC','SWDY':'EGX:SWDY','HRHO':'EGX:HRHO','ESRS':'EGX:ESRS',
+  'MCDR':'EGX:MCDR','SKPC':'EGX:SKPC','APPC':'EGX:APPC','OLFI':'EGX:OLFI','TALM':'EGX:TALM',
+  'UPFD':'EGX:UPFD','WUFA':'EGX:WUFA','YRGN':'EGX:YRGN','ZOD':'EGX:ZOD','INEG':'EGX:INEG',
+  'LUTS':'EGX:LUTS','AGRI':'EGX:AGRI','CEMI':'EGX:CEMI','CHEM':'EGX:CHEM','CLHO':'EGX:CLHO',
+  'EGAS':'EGX:EGAS','ETRA':'EGX:ETRA','FERT':'EGX:FERT','GAS':'EGX:GAS','GLBC':'EGX:GLBC',
+  'IRON':'EGX:IRON','MINA':'EGX:MINA','MNQC':'EGX:MNQC','PACK':'EGX:PACK','PAPR':'EGX:PAPR',
+  'PLAS':'EGX:PLAS','POLY':'EGX:POLY','RUBR':'EGX:RUBR','SAND':'EGX:SAND','SHMD':'EGX:SHMD',
+  'STLT':'EGX:STLT','TEXT':'EGX:TEXT','TILE':'EGX:TILE','TIMB':'EGX:TIMB','AUTO':'EGX:AUTO',
+  'SPIN':'EGX:SPIN','EGTS':'EGX:EGTS','THMD':'EGX:THMD','ALHE':'EGX:ALHE','HOTL':'EGX:HOTL',
+  'TOUR':'EGX:TOUR','TRVL':'EGX:TRVL','ELEC':'EGX:ELEC','ENER':'EGX:ENER','FINS':'EGX:FINS',
+  'HOLD':'EGX:HOLD','INVS':'EGX:INVS','LEAS':'EGX:LEAS','REIT':'EGX:REIT','SUKN':'EGX:SUKN'
 };
 
-const SECTORS = {
-  Banks: ['COMI','EGBN','ABUK','ALEX','CAIB','CIHB','EBNK'],
-  RealEstate: ['PHDC','TMGH','SODIC','MNHD','OBEL','OCDI','FWRY','EKHO','HELI','LXIN'],
-  Food: ['EFID','EAST','ORWE','JUFO','ZMZA','KARO','HOD','DOMT'],
-  Pharma: ['PHCI','RMDA','ISPH','UNIP','MKPH','EIPIC'],
-  Telecom: ['ETEL','TELS','ITPAC','SWDY'],
-  Materials: ['HRHO','ESRS','MCDR','SKPC','APPC','OLFI','TALM','UPFD','WUFA','YRGN','ZOD','INEG','LUTS','AGRI','CEMI','CHEM','CLHO','EGAS','ETRA','FERT','GAS','GLBC','IRON','MINA','MNQC','PACK','PAPR','PLAS','POLY','RUBR','SAND','SHMD','STLT','TEXT','TILE','TIMB'],
-  Services: ['AUTO','SPIN','EGTS','THMD','ALHE','HOTL','TOUR','TRVL','ELEC','ENER','FINS','HOLD','INVS','LEAS','REIT','SUKN']
-};
+// رابط TradingView المباشر لكل سهم
+const tvLink = (sym) => `https://www.tradingview.com/chart/?symbol=${STOCKS[sym]}`;
 
-// ====== مؤشرات فنية محسنة ======
+// المؤشرات الفنية (نفس المعادلات الدقيقة)
 const calc = {
   sma: (d, p) => d.length < p ? null : d.slice(-p).reduce((a, b) => a + b, 0) / p,
   ema: (d, p) => {
@@ -89,7 +72,7 @@ const calc = {
   }
 };
 
-// ====== جلب البيانات مع حماية من الحظر ======
+// جلب البيانات (للفلتر والمسح فقط)
 async function fetchQuote(symbol) {
   const cached = getCached(symbol);
   if (cached) return { ok: true, data: cached };
@@ -98,8 +81,9 @@ async function fetchQuote(symbol) {
   if (!ticker) return { error: 'Symbol not supported' };
 
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=1y&interval=1d`;
-    const { data } = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 12000 });
+    // نستخدم Yahoo فقط في الخلفية لحساب المؤشرات (مصدر مجاني مستقر للبيانات التاريخية)
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker.replace('EGX:','')}.CA?range=1y&interval=1d`;
+    const { data } = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 });
     const res = data.chart?.result?.[0];
     if (!res || !res.meta) return { error: 'No data' };
 
@@ -112,18 +96,18 @@ async function fetchQuote(symbol) {
 
     const obj = {
       symbol: symbol.toUpperCase(), price, change: price - prev,
-      changePercent: ((price - prev) / prev) * 100, currency: m.currency || 'EGP',
-      volume: m.regularMarketVolume || volumes[volumes.length - 1] || 0,
+      changePercent: prev ? ((price - prev) / prev) * 100 : 0,
+      currency: 'EGP', volume: m.regularMarketVolume || volumes[volumes.length - 1] || 0,
       closes, volumes, opens
     };
     setCache(symbol, obj);
     return { ok: true, data: obj };
   } catch (e) {
-    return { error: 'API Error: ' + e.message };
+    return { error: 'Data fetch error' };
   }
 }
 
-// ====== الفلتر المتقدم ======
+// الفلتر المتقدم
 function runFilter(data) {
   const { closes, volumes, price, volume } = data;
   if (closes.length < 200) return { passed: false, reason: 'Need more data' };
@@ -141,7 +125,7 @@ function runFilter(data) {
   checks.macd = macd && Math.abs(macd.hist) < 0.1;
   const passed = Object.values(checks).every(v => v);
   const score = Object.values(checks).filter(v => v).length;
-  return { passed, score, total: 5, details: {
+  return { passed, score, details: {
     vol: { pass: checks.vol, val: volume, thr: smaV ? Math.round(smaV * 1.2) : null },
     stab: { pass: checks.stab, val: (stab * 100).toFixed(2) + '%' },
     trend: { pass: checks.trend, e50: e50?.toFixed(1), e200: e200?.toFixed(1) },
@@ -150,29 +134,42 @@ function runFilter(data) {
   }};
 }
 
-// ====== أوامر البوت ======
+// الأوامر
 const watchlist = new Map();
 const srLevels = new Map();
 
 bot.onText(/^\/start$/i, (msg) => {
-  let t = 'Hegazy Trade Bot v4.0 (Stable)\n\nCommands:\n';
-  t += '/price SYMBOL - Live Price\n/filter SYMBOL - Technical Filter\n';
-  t += '/scan - Full Market Scan\n/top - Gainers/Losers/Active\n';
-  t += '/market - Market Overview\n/add SYMBOL - Watchlist\n/list - View List\n';
-  t += '/support SYMBOL PRICE\n/resistance SYMBOL PRICE\n/alerts - View Alerts\n\n';
+  let t = 'Hegazy Trade Bot (TradingView Edition)\n\n';
+  t += 'Commands:\n';
+  t += '/price SYMBOL - View Chart & Basic Info\n';
+  t += '/filter SYMBOL - Technical Analysis\n';
+  t += '/scan - Market Scan\n';
+  t += '/chart SYMBOL - Open TradingView Chart\n';
+  t += '/add SYMBOL - Watchlist\n/list\n/support\n/resistance\n/alerts\n\n';
   t += 'Example: /filter EFID';
   bot.sendMessage(msg.chat.id, t);
 });
 
 bot.onText(/^\/price\s+(\w+)$/i, async (msg, match) => {
   const sym = match[1].toUpperCase();
+  if (!STOCKS[sym]) return bot.sendMessage(msg.chat.id, 'Symbol not supported');
   const load = await bot.sendMessage(msg.chat.id, 'Loading...');
   const res = await fetchQuote(sym);
   if (res.error) return bot.editMessageText(res.error, { chat_id: msg.chat.id, message_id: load.message_id });
+  
   const d = res.data;
   const icon = d.change >= 0 ? '📈' : '📉';
-  const txt = `${d.symbol}\nPrice: ${d.price.toFixed(2)} ${d.currency}\n${icon} Change: ${d.change.toFixed(2)} (${d.changePercent.toFixed(2)}%)\nVol: ${d.volume.toLocaleString()}`;
+  let txt = `${d.symbol}\nPrice: ${d.price.toFixed(2)} ${d.currency}\n`;
+  txt += `${icon} Change: ${d.change.toFixed(2)} (${d.changePercent.toFixed(2)}%)\n`;
+  txt += `Vol: ${d.volume.toLocaleString()}\n\n`;
+  txt += `📊 View Live Chart: ${tvLink(sym)}`;
   bot.editMessageText(txt, { chat_id: msg.chat.id, message_id: load.message_id });
+});
+
+bot.onText(/^\/chart\s+(\w+)$/i, (msg, match) => {
+  const sym = match[1].toUpperCase();
+  if (!STOCKS[sym]) return bot.sendMessage(msg.chat.id, 'Symbol not supported');
+  bot.sendMessage(msg.chat.id, `📈 Open ${sym} on TradingView:\n${tvLink(sym)}`);
 });
 
 bot.onText(/^\/filter\s+(\w+)$/i, async (msg, match) => {
@@ -180,17 +177,19 @@ bot.onText(/^\/filter\s+(\w+)$/i, async (msg, match) => {
   const load = await bot.sendMessage(msg.chat.id, 'Analyzing...');
   const res = await fetchQuote(sym);
   if (res.error) return bot.editMessageText(res.error, { chat_id: msg.chat.id, message_id: load.message_id });
+  
   const f = runFilter(res.data);
   const dt = f.details;
   let t = `FILTER: ${sym}\nPrice: ${res.data.price.toFixed(2)}\n\n`;
   t += (dt.vol.pass?'✅':'❌') + ` Volume: ${dt.vol.val}${dt.vol.thr?' (Need: '+dt.vol.thr+')':''}\n`;
   t += (dt.stab.pass?'✅':'❌') + ` Stability: ${dt.stab.val} (<2%)\n`;
-  t += (dt.trend.pass?'✅':'') + ` Trend: > EMA50(${dt.trend.e50}) & EMA200(${dt.trend.e200})\n`;
-  t += (dt.rsi.pass?'✅':'') + ` RSI: ${dt.rsi.val} (48-55)\n`;
-  t += (dt.macd.pass?'✅':'') + ` MACD: ${dt.macd.val} (~0)\n\n`;
+  t += (dt.trend.pass?'✅':'❌') + ` Trend: > EMA50(${dt.trend.e50}) & EMA200(${dt.trend.e200})\n`;
+  t += (dt.rsi.pass?'✅':'❌') + ` RSI: ${dt.rsi.val} (48-55)\n`;
+  t += (dt.macd.pass?'✅':'❌') + ` MACD: ${dt.macd.val} (~0)\n\n`;
   t += `Score: ${f.score}/5\n`;
   if (f.passed) t += '\n*** PERFECT BUY SIGNAL ***';
   else if (f.score >= 4) t += '\n* Strong Candidate *';
+  t += `\n\n📊 Chart: ${tvLink(sym)}`;
   bot.editMessageText(t, { chat_id: msg.chat.id, message_id: load.message_id });
 });
 
@@ -205,7 +204,7 @@ bot.onText(/^\/scan$/i, async (msg) => {
       if (f.passed) buys.push(`${symbols[i]}(${res.data.price.toFixed(2)})`);
       else if (f.score >= 4) watch.push(`${symbols[i]}(${f.score}/5)`);
     }
-    if (i % 10 === 0) await new Promise(r => setTimeout(r, 800)); // حماية من الحظر
+    if (i % 10 === 0) await new Promise(r => setTimeout(r, 800));
   }
   let t = 'MARKET SCAN\n\n';
   t += `BUY SIGNALS (${buys.length}):\n${buys.join(', ') || 'None'}\n\n`;
@@ -213,59 +212,19 @@ bot.onText(/^\/scan$/i, async (msg) => {
   bot.editMessageText(t, { chat_id: msg.chat.id, message_id: load.message_id });
 });
 
-bot.onText(/^\/top$/i, async (msg) => {
-  const load = await bot.sendMessage(msg.chat.id, 'Calculating top movers...');
-  let all = [];
-  const symbols = Object.keys(STOCKS);
-  for (let i = 0; i < symbols.length; i++) {
-    const res = await fetchQuote(symbols[i]);
-    if (res.ok) all.push(res.data);
-    if (i % 15 === 0) await new Promise(r => setTimeout(r, 600));
-  }
-  const gainers = all.filter(x => x.change > 0).sort((a, b) => b.changePercent - a.changePercent).slice(0, 5);
-  const losers = all.filter(x => x.change < 0).sort((a, b) => a.changePercent - b.changePercent).slice(0, 5);
-  const active = all.sort((a, b) => b.volume - a.volume).slice(0, 5);
-
-  const fmt = arr => arr.map(x => `${x.symbol}: ${x.price.toFixed(2)} (${x.changePercent.toFixed(2)}%)`).join('\n');
-  let t = ' TOP MOVERS\n\n';
-  t += `📈 Gainers:\n${fmt(gainers)}\n\n📉 Losers:\n${fmt(losers)}\n\n🔥 Most Active:\n${active.map(x => `${x.symbol}: ${x.volume.toLocaleString()} vol`).join('\n')}`;
-  bot.editMessageText(t, { chat_id: msg.chat.id, message_id: load.message_id });
-});
-
-bot.onText(/^\/market$/i, async (msg) => {
-  const load = await bot.sendMessage(msg.chat.id, 'Fetching market overview...');
-  // EGX30 proxy using top weighted stocks
-  const proxies = ['COMI','EGBN','TMGH','PHDC','ETEL','SWDY','ESRS','HRHO','SODIC','MNHD'];
-  let scores = [];
-  for (const s of proxies) {
-    const res = await fetchQuote(s);
-    if (res.ok) scores.push(runFilter(res.data).score);
-  }
-  const avg = scores.length ? (scores.reduce((a,b)=>a+b,0)/scores.length).toFixed(1) : 'N/A';
-  const now = new Date();
-  const isWeekday = [0,6].includes(now.getDay()) ? false : true; // 0=Sun in JS, but Egypt Sun-Thu
-  // Egypt workweek: Sun(0) to Thu(4). Fri(5), Sat(6) closed.
-  const isOpen = isWeekday && now.getHours() >= 10 && now.getHours() < 15;
-  let t = ` MARKET OVERVIEW\n\n`;
-  t += `Status: ${isOpen ? '🟢 Open' : '🔴 Closed'}\n`;
-  t += `Technical Score (Avg): ${avg}/5\n`;
-  t += `Time: ${now.toLocaleTimeString('en-EG', {timeZone:'Africa/Cairo'})}\n`;
-  t += `\nUse /top for movers, /scan for full filter.`;
-  bot.editMessageText(t, { chat_id: msg.chat.id, message_id: load.message_id });
-});
-
+// باقي الأوامر (add, list, support, resistance, alerts) نفس السابقة مع تحديث الروابط
 bot.onText(/^\/add\s+(\w+)$/i, (msg, match) => {
   const sym = match[1].toUpperCase();
   if (!STOCKS[sym]) return bot.sendMessage(msg.chat.id, 'Symbol not supported');
   if (!watchlist.has(msg.chat.id)) watchlist.set(msg.chat.id, []);
   const list = watchlist.get(msg.chat.id);
-  if (!list.includes(sym)) { list.push(sym); bot.sendMessage(msg.chat.id, 'Added ' + sym); }
+  if (!list.includes(sym)) { list.push(sym); bot.sendMessage(msg.chat.id, 'Added ' + sym + `\nChart: ${tvLink(sym)}`); }
   else bot.sendMessage(msg.chat.id, 'Already exists');
 });
 
 bot.onText(/^\/list$/i, (msg) => {
   const list = watchlist.get(msg.chat.id) || [];
-  bot.sendMessage(msg.chat.id, list.length ? 'Watchlist:\n' + list.join('\n') : 'Empty');
+  bot.sendMessage(msg.chat.id, list.length ? 'Watchlist:\n' + list.map(s => `${s} → ${tvLink(s)}`).join('\n') : 'Empty');
 });
 
 bot.onText(/^\/(support|resistance)\s+(\w+)\s+([\d.]+)$/i, (msg, match) => {
@@ -275,7 +234,7 @@ bot.onText(/^\/(support|resistance)\s+(\w+)\s+([\d.]+)$/i, (msg, match) => {
   if (!srLevels.has(cid)) srLevels.set(cid, {});
   if (!srLevels.get(cid)[symbol]) srLevels.get(cid)[symbol] = { support: [], resistance: [] };
   srLevels.get(cid)[symbol][type === 'support' ? 'support' : 'resistance'].push(price);
-  bot.sendMessage(msg.chat.id, `Set ${type} for ${symbol} at ${price}`);
+  bot.sendMessage(msg.chat.id, `Set ${type} for ${symbol} at ${price}\nChart: ${tvLink(symbol)}`);
 });
 
 bot.onText(/^\/alerts$/i, (msg) => {
@@ -283,49 +242,30 @@ bot.onText(/^\/alerts$/i, (msg) => {
   if (!levels) return bot.sendMessage(msg.chat.id, 'No alerts set');
   let t = 'Your Alerts:\n';
   for (const [sym, lvls] of Object.entries(levels)) {
-    if (lvls.support.length) t += ` ${sym} Support: ${lvls.support.join(', ')}\n`;
+    if (lvls.support.length) t += `🟢 ${sym} Support: ${lvls.support.join(', ')}\n`;
     if (lvls.resistance.length) t += `🔴 ${sym} Resistance: ${lvls.resistance.join(', ')}\n`;
   }
   bot.sendMessage(msg.chat.id, t);
 });
 
-// ====== فحص دوري كل 10 دقائق (ذكاء توفير الموارد) ======
+// فحص دوري كل 10 دقائق
 setInterval(async () => {
   const now = new Date();
-  const day = now.getDay(); // 0=Sun, 5=Fri, 6=Sat
-  const hour = now.getHours();
-  // سوق مصر: أحد-خميس 10:00-14:30
-  if ([5,6].includes(day) || hour < 10 || hour >= 15) {
-    console.log('Market closed. Skipping periodic check.');
-    return;
-  }
-
-  console.log('Running periodic checks...');
+  const day = now.getDay(), hour = now.getHours();
+  if ([5,6].includes(day) || hour < 10 || hour >= 15) return;
+  
   for (const [cid, list] of watchlist) {
     for (const sym of list) {
       try {
         const res = await fetchQuote(sym);
         if (res.ok) {
           const f = runFilter(res.data);
-          if (f.passed) bot.sendMessage(cid, `🚨 ${sym} hit filter!\nPrice: ${res.data.price.toFixed(2)} | Score: ${f.score}/5`);
+          if (f.passed) bot.sendMessage(cid, `🚨 ${sym} hit filter!\nPrice: ${res.data.price.toFixed(2)}\nChart: ${tvLink(sym)}`);
         }
-      } catch(e) { continue; }
-      await new Promise(r => setTimeout(r, 1000)); // تأخير بين الطلبات
-    }
-  }
-
-  for (const [cid, symbols] of srLevels) {
-    for (const [sym, lvls] of Object.entries(symbols)) {
-      try {
-        const res = await fetchQuote(sym);
-        if (!res.ok) continue;
-        const p = res.data.price;
-        for (const sp of lvls.support) if (Math.abs(p - sp) < 0.1) bot.sendMessage(cid, `🟢 ${sym} touched support ${sp}`);
-        for (const rp of lvls.resistance) if (Math.abs(p - rp) < 0.1) bot.sendMessage(cid, `🔴 ${sym} touched resistance ${rp}`);
       } catch(e) { continue; }
       await new Promise(r => setTimeout(r, 1000));
     }
   }
-}, 600000); // 10 دقائق
+}, 600000);
 
-console.log('Hegazy Trade Bot v4.0 Stable Started');
+console.log('Hegazy Trade Bot (TradingView Edition) Started');
