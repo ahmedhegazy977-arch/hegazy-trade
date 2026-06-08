@@ -5,7 +5,7 @@ const TOKEN = process.env.TOKEN;
 const bot = new TelegramBot(TOKEN, { polling: true });
 
 const cache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 دقائق
+const CACHE_TTL = 5 * 60 * 1000;
 
 function getCached(sym) {
   const item = cache.get(sym);
@@ -37,7 +37,7 @@ const STOCKS = {
 
 const tvLink = (sym) => `https://www.tradingview.com/chart/?symbol=EGX:${sym.replace('.CA','')}`;
 
-// ==================== جلب بيانات ياهو (مُحسّن للثبات) ====================
+// ==================== جلب البيانات (مُصلح وآمن 100%) ====================
 async function fetchYahoo(symbol) {
   const cached = getCached(symbol);
   if (cached) return { ok: true, data: cached };
@@ -47,46 +47,43 @@ async function fetchYahoo(symbol) {
 
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=1d&interval=5m`;
-    const { data } = await axios.get(url, {
-      headers: { 
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json'
-      },
-      timeout: 10000
-    });
-
+    const { data } = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 });
     const res = data.chart?.result?.[0];
     if (!res || !res.meta) return { error: 'No data available' };
 
-    const m = res.meta, q = res.indicators?.quote?.[0];
-    const closes = (q?.close || []).filter(v => v !== null);
-    const volumes = (q?.volume || []).filter(v => v !== null);
-    const opens = (q?.open || []).filter(v => v !== null);
+    const m = res.meta;
+    const q = res.indicators?.quote?.[0] || {};
     
-    const price = m.regularMarketPrice || closes[closes.length - 1];
-    const prev = m.previousClose || closes[closes.length - 2] || price;
+    // تصفية آمنة لمنع أخطاء الـ undefined
+    const closes = (q.close || []).filter(v => v != null && typeof v === 'number');
+    const volumes = (q.volume || []).filter(v => v != null && typeof v === 'number');
+    const opens = (q.open || []).filter(v => v != null && typeof v === 'number');
+
+    const price = m.regularMarketPrice || (closes.length ? closes[closes.length - 1] : 0);
+    const prev = m.previousClose || (closes.length > 1 ? closes[closes.length - 2] : price);
     const change = price - prev;
     const changePercent = prev ? (change / prev) * 100 : 0;
 
     const obj = {
-      symbol: symbol.toUpperCase(), price, change, changePercent,
-      volume: m.regularMarketVolume || volumes[volumes.length - 1] || 0,
-      high: m.regularMarketDayHigh || Math.max(...closes),
-      low: m.regularMarketDayLow || Math.min(...closes),
-      open: opens[0] || price,
+      symbol: symbol.toUpperCase(),
+      price, change, changePercent,
+      volume: m.regularMarketVolume || (volumes.length ? volumes[volumes.length - 1] : 0),
+      high: m.regularMarketDayHigh || (closes.length ? Math.max(...closes) : price),
+      low: m.regularMarketDayLow || (closes.length ? Math.min(...closes) : price),
+      open: opens.length ? opens[0] : price,
       prevClose: prev,
       currency: 'EGP',
-      closes, // محتاجة للفلتر الفني
+      closes, // للتحليل الفني
       source: 'Yahoo Finance (15m delay)'
     };
     setCache(symbol, obj);
     return { ok: true, data: obj };
   } catch (e) {
-    return { error: 'Data fetch failed' };
+    return { error: 'Fetch failed: ' + e.message };
   }
 }
 
-// ==================== المؤشرات الفنية (دقيقة 100% لأنها تعتمد على الإغلاقات اليومية) ====================
+// ==================== المؤشرات الفنية ====================
 const calc = {
   sma: (d, p) => d.length < p ? null : d.slice(-p).reduce((a, b) => a + b, 0) / p,
   ema: (d, p) => {
@@ -123,7 +120,7 @@ async function fetchHistory(symbol) {
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${STOCKS[symbol]}?range=1y&interval=1d`;
     const { data } = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000 });
-    return data.chart?.result?.[0]?.indicators?.quote?.[0]?.close?.filter(v => v !== null) || [];
+    return data.chart?.result?.[0]?.indicators?.quote?.[0]?.close?.filter(v => v != null && typeof v === 'number') || [];
   } catch (e) { return []; }
 }
 
@@ -154,46 +151,46 @@ async function runFilter(symbol, liveData) {
   }};
 }
 
-// ==================== أوامر البوت ====================
+// ==================== الأوامر ====================
 const watchlist = new Map(), srLevels = new Map();
 
 bot.onText(/^\/start$/i, (msg) => {
-  bot.sendMessage(msg.chat.id, '🤖 Hegazy Trade Bot (Stable v6)\n\n Commands:\n/price SYMBOL\n/filter SYMBOL\n/scan\n/chart SYMBOL\n/add SYMBOL\n/list\n/support SYMBOL PRICE\n/resistance SYMBOL PRICE\n/alerts\n\n⚠️ Data delayed ~15m. Verify live price via /chart');
+  bot.sendMessage(msg.chat.id, 'Hegazy Trade Bot (Stable v7)\n\nCommands:\n/price SYMBOL\n/filter SYMBOL\n/scan\n/chart SYMBOL\n/add SYMBOL\n/list\n/support SYMBOL PRICE\n/resistance SYMBOL PRICE\n/alerts');
 });
 
 bot.onText(/^\/price\s+(\w+)$/i, async (msg, match) => {
   const sym = match[1].toUpperCase();
-  if (!STOCKS[sym]) return bot.sendMessage(msg.chat.id, '❌ Symbol not supported');
-  const load = await bot.sendMessage(msg.chat.id, ' Fetching...');
+  if (!STOCKS[sym]) return bot.sendMessage(msg.chat.id, 'Symbol not supported');
+  const load = await bot.sendMessage(msg.chat.id, 'Fetching...');
   const res = await fetchYahoo(sym);
-  if (res.error) return bot.editMessageText('❌ ' + res.error, { chat_id: msg.chat.id, message_id: load.message_id });
+  if (res.error) return bot.editMessageText('Error: ' + res.error, { chat_id: msg.chat.id, message_id: load.message_id });
   const d = res.data;
   const icon = d.change >= 0 ? '📈' : '📉';
-  let txt = `📊 ${d.symbol}\n💰 Price: ${d.price.toFixed(2)} ${d.currency}\n${icon} Change: ${d.change.toFixed(2)} (${d.changePercent.toFixed(2)}%)\n📦 Vol: ${d.volume.toLocaleString()}\n🌐 ${d.source}\n🔗 Live Chart: ${tvLink(sym)}`;
+  let txt = `📊 ${d.symbol}\n💰 Price: ${d.price.toFixed(2)} ${d.currency}\n${icon} Change: ${d.change.toFixed(2)} (${d.changePercent.toFixed(2)}%)\n📦 Vol: ${d.volume.toLocaleString()}\n🌐 ${d.source}\n🔗 ${tvLink(sym)}`;
   bot.editMessageText(txt, { chat_id: msg.chat.id, message_id: load.message_id });
 });
 
 bot.onText(/^\/filter\s+(\w+)$/i, async (msg, match) => {
   const sym = match[1].toUpperCase();
-  if (!STOCKS[sym]) return bot.sendMessage(msg.chat.id, '❌ Symbol not supported');
-  const load = await bot.sendMessage(msg.chat.id, '🔍 Analyzing...');
+  if (!STOCKS[sym]) return bot.sendMessage(msg.chat.id, 'Symbol not supported');
+  const load = await bot.sendMessage(msg.chat.id, 'Analyzing...');
   const live = await fetchYahoo(sym);
-  if (live.error) return bot.editMessageText('❌ ' + live.error, { chat_id: msg.chat.id, message_id: load.message_id });
+  if (live.error) return bot.editMessageText('Error: ' + live.error, { chat_id: msg.chat.id, message_id: load.message_id });
   const f = await runFilter(sym, live.data);
   const dt = f.details;
-  let t = `🎯 FILTER: ${sym}\n Price: ${live.data.price.toFixed(2)}\n\n`;
+  let t = `🎯 FILTER: ${sym}\n💰 Price: ${live.data.price.toFixed(2)}\n\n`;
   t += (dt.vol.pass?'✅':'❌') + ` Volume: ${dt.vol.val.toLocaleString()}\n`;
   t += (dt.stab.pass?'✅':'❌') + ` Stability: ${dt.stab.val} (<3%)\n`;
   t += (dt.trend.pass?'✅':'❌') + ` Trend: > EMA50(${dt.trend.e50}) & EMA200(${dt.trend.e200})\n`;
   t += (dt.rsi.pass?'✅':'❌') + ` RSI: ${dt.rsi.val} (45-60)\n`;
   t += (dt.macd.pass?'✅':'❌') + ` MACD: ${dt.macd.val} (~0)\n\n Score: ${f.score}/5\n`;
-  if (f.passed) t += '🚀 PERFECT SIGNAL'; else if (f.score >= 4) t += '✅ Strong Candidate';
-  t += `\n🔗 Verify Live: ${tvLink(sym)}`;
+  if (f.passed) t += ' PERFECT SIGNAL'; else if (f.score >= 4) t += '✅ Strong Candidate';
+  t += `\n🔗 ${tvLink(sym)}`;
   bot.editMessageText(t, { chat_id: msg.chat.id, message_id: load.message_id });
 });
 
 bot.onText(/^\/scan$/i, async (msg) => {
-  const load = await bot.sendMessage(msg.chat.id, ' Scanning EGX... (~30s)');
+  const load = await bot.sendMessage(msg.chat.id, 'Scanning EGX... (~30s)');
   let buys = [], watch = [];
   const syms = Object.keys(STOCKS);
   for (let i = 0; i < syms.length; i++) {
@@ -205,23 +202,23 @@ bot.onText(/^\/scan$/i, async (msg) => {
     }
     if (i % 8 === 0) await new Promise(r => setTimeout(r, 1000));
   }
-  let t = '📋 EGX SCAN REPORT\n\n BUY SIGNALS:\n' + (buys.join(', ') || 'None') + '\n\n WATCH LIST:\n' + (watch.join(', ') || 'None');
+  let t = '📋 EGX SCAN\n\n🟢 BUY:\n' + (buys.join(', ') || 'None') + '\n\n WATCH:\n' + (watch.join(', ') || 'None');
   bot.editMessageText(t, { chat_id: msg.chat.id, message_id: load.message_id });
 });
 
 bot.onText(/^\/chart\s+(\w+)$/i, (msg, match) => {
   const sym = match[1].toUpperCase();
-  if (!STOCKS[sym]) return bot.sendMessage(msg.chat.id, ' Symbol not supported');
-  bot.sendMessage(msg.chat.id, `📈 ${sym} Live Chart:\n${tvLink(sym)}`);
+  if (!STOCKS[sym]) return bot.sendMessage(msg.chat.id, 'Symbol not supported');
+  bot.sendMessage(msg.chat.id, `📈 ${sym}:\n${tvLink(sym)}`);
 });
 
 bot.onText(/^\/add\s+(\w+)$/i, (msg, match) => {
   const sym = match[1].toUpperCase();
-  if (!STOCKS[sym]) return bot.sendMessage(msg.chat.id, '❌ Symbol not supported');
+  if (!STOCKS[sym]) return bot.sendMessage(msg.chat.id, 'Symbol not supported');
   if (!watchlist.has(msg.chat.id)) watchlist.set(msg.chat.id, []);
   const list = watchlist.get(msg.chat.id);
   if (!list.includes(sym)) { list.push(sym); bot.sendMessage(msg.chat.id, `✅ Added ${sym}`); }
-  else bot.sendMessage(msg.chat.id, '⚠️ Already exists');
+  else bot.sendMessage(msg.chat.id, '⚠️ Exists');
 });
 
 bot.onText(/^\/list$/i, (msg) => {
@@ -232,7 +229,7 @@ bot.onText(/^\/list$/i, (msg) => {
 bot.onText(/^\/(support|resistance)\s+(\w+)\s+([\d.]+)$/i, (msg, match) => {
   const type = match[1], symbol = match[2].toUpperCase(), price = parseFloat(match[3]);
   const cid = msg.chat.id;
-  if (!STOCKS[symbol]) return bot.sendMessage(msg.chat.id, '❌ Symbol not supported');
+  if (!STOCKS[symbol]) return bot.sendMessage(msg.chat.id, 'Symbol not supported');
   if (!srLevels.has(cid)) srLevels.set(cid, {});
   if (!srLevels.get(cid)[symbol]) srLevels.get(cid)[symbol] = { support: [], resistance: [] };
   srLevels.get(cid)[symbol][type === 'support' ? 'support' : 'resistance'].push(price);
@@ -241,8 +238,8 @@ bot.onText(/^\/(support|resistance)\s+(\w+)\s+([\d.]+)$/i, (msg, match) => {
 
 bot.onText(/^\/alerts$/i, (msg) => {
   const levels = srLevels.get(msg.chat.id);
-  if (!levels) return bot.sendMessage(msg.chat.id, '📭 No active alerts');
-  let t = '🔔 Your Alerts:\n';
+  if (!levels) return bot.sendMessage(msg.chat.id, '📭 No alerts');
+  let t = '🔔 Alerts:\n';
   for (const [sym, lvls] of Object.entries(levels)) {
     if (lvls.support.length) t += `🟢 ${sym} Support: ${lvls.support.join(', ')}\n`;
     if (lvls.resistance.length) t += `🔴 ${sym} Resistance: ${lvls.resistance.join(', ')}\n`;
@@ -250,7 +247,6 @@ bot.onText(/^\/alerts$/i, (msg) => {
   bot.sendMessage(msg.chat.id, t);
 });
 
-// فحص دوري كل 10 دقائق
 setInterval(async () => {
   const now = new Date();
   if ([5,6].includes(now.getDay()) || now.getHours() < 10 || now.getHours() >= 15) return;
@@ -260,7 +256,7 @@ setInterval(async () => {
         const live = await fetchYahoo(sym);
         if (live.ok) {
           const f = await runFilter(sym, live.data);
-          if (f.passed) bot.sendMessage(cid, `🚨 ${sym} hit filter!\n💰 ${live.data.price.toFixed(2)} EGP\n📊 Score: ${f.score}/5\n🔗 ${tvLink(sym)}`);
+          if (f.passed) bot.sendMessage(cid, `🚨 ${sym} hit filter!\n💰 ${live.data.price.toFixed(2)}\n📊 ${f.score}/5`);
         }
       } catch(e) { continue; }
       await new Promise(r => setTimeout(r, 1200));
@@ -268,4 +264,4 @@ setInterval(async () => {
   }
 }, 600000);
 
-console.log('✅ Hegazy Trade Bot (Stable v6) Started');
+console.log('✅ Hegazy Trade Bot (Stable v7) Started');
