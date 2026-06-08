@@ -1,13 +1,14 @@
 {
-  "name": "hegazy-trade-clean",
-  "version": "3.0.0",
+  "name": "hegazy-trade-mubasher",
+  "version": "5.0.0",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
   "dependencies": {
-    "node-telegram-bot-api": "0.61.0",
-    "axios": "1.6.0"
+    "axios": "1.6.0",
+    "cheerio": "^1.0.0-rc.12",
+    "node-telegram-bot-api": "0.61.0"
   },
   "engines": {
     "node": "20.x"
