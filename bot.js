@@ -37,50 +37,83 @@ const STOCKS = {
 
 const tvLink = (sym) => `https://www.tradingview.com/chart/?symbol=EGX:${sym.replace('.CA','')}`;
 
-// ==================== جلب البيانات (مُصلح وآمن 100%) ====================
-async function fetchYahoo(symbol) {
+// ==================== محرك الجلب الذكي (API + Fallback) ====================
+async function fetchData(symbol) {
   const cached = getCached(symbol);
   if (cached) return { ok: true, data: cached };
 
   const ticker = STOCKS[symbol.toUpperCase()];
   if (!ticker) return { error: 'Symbol not supported' };
 
+  // 1. Try Yahoo API
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=1d&interval=5m`;
-    const { data } = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 });
+    const { data } = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000 });
     const res = data.chart?.result?.[0];
-    if (!res || !res.meta) return { error: 'No data available' };
+    if (res && res.meta) {
+      return processApiResponse(symbol, res.meta, res.indicators?.quote?.[0]);
+    }
+  } catch (e) { console.log('API failed, trying fallback...'); }
 
-    const m = res.meta;
-    const q = res.indicators?.quote?.[0] || {};
-    
-    // تصفية آمنة لمنع أخطاء الـ undefined
-    const closes = (q.close || []).filter(v => v != null && typeof v === 'number');
-    const volumes = (q.volume || []).filter(v => v != null && typeof v === 'number');
-    const opens = (q.open || []).filter(v => v != null && typeof v === 'number');
+  // 2. Fallback: Scrape Yahoo Quote Page Source (JSON Injection)
+  try {
+    const url = `https://finance.yahoo.com/quote/${ticker}`;
+    const { data: html } = await axios.get(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+      timeout: 12000
+    });
 
-    const price = m.regularMarketPrice || (closes.length ? closes[closes.length - 1] : 0);
-    const prev = m.previousClose || (closes.length > 1 ? closes[closes.length - 2] : price);
-    const change = price - prev;
-    const changePercent = prev ? (change / prev) * 100 : 0;
+    // Extract root.App.main JSON
+    const match = html.match(/root\.App\.main\s*=\s*({[^<]+});/);
+    if (match) {
+      const json = JSON.parse(match[1]);
+      const stores = json?.context?.dispatcher?.stores?.QuoteSummaryStore;
+      if (stores?.summaryDetail) {
+        const d = stores.summaryDetail;
+        return {
+          ok: true,
+          data: {
+            symbol: symbol.toUpperCase(),
+            price: d.regularMarketPrice?.raw || 0,
+            change: (d.regularMarketPrice?.raw || 0) - (d.regularMarketPreviousClose?.raw || 0),
+            changePercent: d.regularMarketChangePercent?.raw || 0,
+            volume: d.regularMarketVolume?.raw || 0,
+            high: d.dayHigh?.raw || 0,
+            low: d.dayLow?.raw || 0,
+            open: d.regularMarketOpen?.raw || 0,
+            prevClose: d.regularMarketPreviousClose?.raw || 0,
+            currency: 'EGP',
+            closes: [], // No history from fallback, filter will use history fetch separately
+            source: 'Yahoo Fallback (Scrape)'
+          }
+        };
+      }
+    }
+  } catch (e) { console.log('Fallback failed'); }
 
-    const obj = {
-      symbol: symbol.toUpperCase(),
-      price, change, changePercent,
-      volume: m.regularMarketVolume || (volumes.length ? volumes[volumes.length - 1] : 0),
-      high: m.regularMarketDayHigh || (closes.length ? Math.max(...closes) : price),
-      low: m.regularMarketDayLow || (closes.length ? Math.min(...closes) : price),
+  return { error: 'Fetch failed: Source blocked' };
+}
+
+function processApiResponse(symbol, meta, quote) {
+  if (!meta) return { error: 'No data' };
+  const closes = (quote?.close || []).filter(v => v != null);
+  const volumes = (quote?.volume || []).filter(v => v != null);
+  const opens = (quote?.open || []).filter(v => v != null);
+  const price = meta.regularMarketPrice || (closes.length ? closes[closes.length - 1] : 0);
+  const prev = meta.previousClose || (closes.length > 1 ? closes[closes.length - 2] : price);
+  
+  return {
+    ok: true,
+    data: {
+      symbol: symbol.toUpperCase(), price,
+      change: price - prev, changePercent: prev ? ((price - prev) / prev) * 100 : 0,
+      volume: meta.regularMarketVolume || (volumes.length ? volumes[volumes.length - 1] : 0),
+      high: meta.regularMarketDayHigh || (closes.length ? Math.max(...closes) : price),
+      low: meta.regularMarketDayLow || (closes.length ? Math.min(...closes) : price),
       open: opens.length ? opens[0] : price,
-      prevClose: prev,
-      currency: 'EGP',
-      closes, // للتحليل الفني
-      source: 'Yahoo Finance (15m delay)'
-    };
-    setCache(symbol, obj);
-    return { ok: true, data: obj };
-  } catch (e) {
-    return { error: 'Fetch failed: ' + e.message };
-  }
+      prevClose: prev, currency: 'EGP', closes, source: 'Yahoo API'
+    }
+  };
 }
 
 // ==================== المؤشرات الفنية ====================
@@ -120,7 +153,7 @@ async function fetchHistory(symbol) {
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${STOCKS[symbol]}?range=1y&interval=1d`;
     const { data } = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000 });
-    return data.chart?.result?.[0]?.indicators?.quote?.[0]?.close?.filter(v => v != null && typeof v === 'number') || [];
+    return data.chart?.result?.[0]?.indicators?.quote?.[0]?.close?.filter(v => v != null) || [];
   } catch (e) { return []; }
 }
 
@@ -155,18 +188,18 @@ async function runFilter(symbol, liveData) {
 const watchlist = new Map(), srLevels = new Map();
 
 bot.onText(/^\/start$/i, (msg) => {
-  bot.sendMessage(msg.chat.id, 'Hegazy Trade Bot (Stable v7)\n\nCommands:\n/price SYMBOL\n/filter SYMBOL\n/scan\n/chart SYMBOL\n/add SYMBOL\n/list\n/support SYMBOL PRICE\n/resistance SYMBOL PRICE\n/alerts');
+  bot.sendMessage(msg.chat.id, 'Hegazy Trade Bot (Smart Fallback)\n\nCommands:\n/price SYMBOL\n/filter SYMBOL\n/scan\n/chart SYMBOL\n/add SYMBOL\n/list\n/support SYMBOL PRICE\n/resistance SYMBOL PRICE\n/alerts');
 });
 
 bot.onText(/^\/price\s+(\w+)$/i, async (msg, match) => {
   const sym = match[1].toUpperCase();
   if (!STOCKS[sym]) return bot.sendMessage(msg.chat.id, 'Symbol not supported');
   const load = await bot.sendMessage(msg.chat.id, 'Fetching...');
-  const res = await fetchYahoo(sym);
+  const res = await fetchData(sym);
   if (res.error) return bot.editMessageText('Error: ' + res.error, { chat_id: msg.chat.id, message_id: load.message_id });
   const d = res.data;
   const icon = d.change >= 0 ? '📈' : '📉';
-  let txt = `📊 ${d.symbol}\n💰 Price: ${d.price.toFixed(2)} ${d.currency}\n${icon} Change: ${d.change.toFixed(2)} (${d.changePercent.toFixed(2)}%)\n📦 Vol: ${d.volume.toLocaleString()}\n🌐 ${d.source}\n🔗 ${tvLink(sym)}`;
+  let txt = ` ${d.symbol}\n💰 Price: ${d.price.toFixed(2)} ${d.currency}\n${icon} Change: ${d.change.toFixed(2)} (${d.changePercent.toFixed(2)}%)\n📦 Vol: ${d.volume.toLocaleString()}\n ${d.source}\n🔗 ${tvLink(sym)}`;
   bot.editMessageText(txt, { chat_id: msg.chat.id, message_id: load.message_id });
 });
 
@@ -174,7 +207,7 @@ bot.onText(/^\/filter\s+(\w+)$/i, async (msg, match) => {
   const sym = match[1].toUpperCase();
   if (!STOCKS[sym]) return bot.sendMessage(msg.chat.id, 'Symbol not supported');
   const load = await bot.sendMessage(msg.chat.id, 'Analyzing...');
-  const live = await fetchYahoo(sym);
+  const live = await fetchData(sym);
   if (live.error) return bot.editMessageText('Error: ' + live.error, { chat_id: msg.chat.id, message_id: load.message_id });
   const f = await runFilter(sym, live.data);
   const dt = f.details;
@@ -190,17 +223,17 @@ bot.onText(/^\/filter\s+(\w+)$/i, async (msg, match) => {
 });
 
 bot.onText(/^\/scan$/i, async (msg) => {
-  const load = await bot.sendMessage(msg.chat.id, 'Scanning EGX... (~30s)');
+  const load = await bot.sendMessage(msg.chat.id, 'Scanning EGX... (~40s)');
   let buys = [], watch = [];
   const syms = Object.keys(STOCKS);
   for (let i = 0; i < syms.length; i++) {
-    const live = await fetchYahoo(syms[i]);
+    const live = await fetchData(syms[i]);
     if (live.ok) {
       const f = await runFilter(syms[i], live.data);
       if (f.passed) buys.push(`${syms[i]}(${live.data.price.toFixed(2)})`);
       else if (f.score >= 4) watch.push(`${syms[i]}(${f.score}/5)`);
     }
-    if (i % 8 === 0) await new Promise(r => setTimeout(r, 1000));
+    if (i % 5 === 0) await new Promise(r => setTimeout(r, 800));
   }
   let t = '📋 EGX SCAN\n\n🟢 BUY:\n' + (buys.join(', ') || 'None') + '\n\n WATCH:\n' + (watch.join(', ') || 'None');
   bot.editMessageText(t, { chat_id: msg.chat.id, message_id: load.message_id });
@@ -209,7 +242,7 @@ bot.onText(/^\/scan$/i, async (msg) => {
 bot.onText(/^\/chart\s+(\w+)$/i, (msg, match) => {
   const sym = match[1].toUpperCase();
   if (!STOCKS[sym]) return bot.sendMessage(msg.chat.id, 'Symbol not supported');
-  bot.sendMessage(msg.chat.id, `📈 ${sym}:\n${tvLink(sym)}`);
+  bot.sendMessage(msg.chat.id, ` ${sym}:\n${tvLink(sym)}`);
 });
 
 bot.onText(/^\/add\s+(\w+)$/i, (msg, match) => {
@@ -253,15 +286,15 @@ setInterval(async () => {
   for (const [cid, list] of watchlist) {
     for (const sym of list) {
       try {
-        const live = await fetchYahoo(sym);
+        const live = await fetchData(sym);
         if (live.ok) {
           const f = await runFilter(sym, live.data);
           if (f.passed) bot.sendMessage(cid, `🚨 ${sym} hit filter!\n💰 ${live.data.price.toFixed(2)}\n📊 ${f.score}/5`);
         }
       } catch(e) { continue; }
-      await new Promise(r => setTimeout(r, 1200));
+      await new Promise(r => setTimeout(r, 1500));
     }
   }
 }, 600000);
 
-console.log('✅ Hegazy Trade Bot (Stable v7) Started');
+console.log('✅ Hegazy Trade Bot (Smart Fallback) Started');
