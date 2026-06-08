@@ -1,12 +1,11 @@
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
-const cheerio = require('cheerio');
 
 const TOKEN = process.env.TOKEN;
 const bot = new TelegramBot(TOKEN, { polling: true });
 
 const cache = new Map();
-const CACHE_TTL = 2 * 60 * 1000;
+const CACHE_TTL = 3 * 60 * 1000; // 3 دقائق
 
 function getCached(sym) {
   const item = cache.get(sym);
@@ -15,97 +14,89 @@ function getCached(sym) {
 function setCache(sym, data) { cache.set(sym, { data, time: Date.now() }); }
 
 const STOCKS = {
-  'COMI':'COMI','EGBN':'EGBN','ABUK':'ABUK','ALEX':'ALEX','CAIB':'CAIB',
-  'CIHB':'CIHB','EBNK':'EBNK','EKBN':'EKBN','NSGB':'NSGB','SAIB':'SAIB',
-  'PHDC':'PHDC','TMGH':'TMGH','SODIC':'SODIC','MNHD':'MNHD','OBEL':'OBEL',
-  'OCDI':'OCDI','FWRY':'FWRY','EKHO':'EKHO','EKZN':'EKZN','HELI':'HELI',
-  'LXIN':'LXIN','MOPH':'MOPH','NILE':'NILE','QALY':'QALY','PALM':'PALM',
-  'EFID':'EFID','EAST':'EAST','ORWE':'ORWE','JUFO':'JUFO','ZMZA':'ZMZA',
-  'KARO':'KARO','HOD':'HOD','DOMT':'DOMT','PHCI':'PHCI','RMDA':'RMDA',
-  'ISPH':'ISPH','UNIP':'UNIP','MKPH':'MKPH','EIPIC':'EIPIC','ETEL':'ETEL',
-  'TELS':'TELS','ITPAC':'ITPAC','SWDY':'SWDY','HRHO':'HRHO','ESRS':'ESRS',
-  'MCDR':'MCDR','SKPC':'SKPC','APPC':'APPC','OLFI':'OLFI','TALM':'TALM',
-  'UPFD':'UPFD','WUFA':'WUFA','YRGN':'YRGN','ZOD':'ZOD','INEG':'INEG',
-  'LUTS':'LUTS','AGRI':'AGRI','CEMI':'CEMI','CHEM':'CHEM','CLHO':'CLHO',
-  'EGAS':'EGAS','ETRA':'ETRA','FERT':'FERT','GAS':'GAS','GLBC':'GLBC',
-  'IRON':'IRON','MINA':'MINA','MNQC':'MNQC','PACK':'PACK','PAPR':'PAPR',
-  'PLAS':'PLAS','POLY':'POLY','RUBR':'RUBR','SAND':'SAND','SHMD':'SHMD',
-  'STLT':'STLT','TEXT':'TEXT','TILE':'TILE','TIMB':'TIMB','AUTO':'AUTO',
-  'SPIN':'SPIN','EGTS':'EGTS','THMD':'THMD','ALHE':'ALHE','HOTL':'HOTL',
-  'TOUR':'TOUR','TRVL':'TRVL','ELEC':'ELEC','ENER':'ENER','FINS':'FINS',
+  'COMI':'COMI','EGBN':'EGBN','ABUK':'ABUK','ALEX':'ALEX','CAIB':'CAIB','CIHB':'CIHB',
+  'EBNK':'EBNK','EKBN':'EKBN','NSGB':'NSGB','SAIB':'SAIB','PHDC':'PHDC','TMGH':'TMGH',
+  'SODIC':'SODIC','MNHD':'MNHD','OBEL':'OBEL','OCDI':'OCDI','FWRY':'FWRY','EKHO':'EKHO',
+  'EKZN':'EKZN','HELI':'HELI','LXIN':'LXIN','MOPH':'MOPH','NILE':'NILE','QALY':'QALY',
+  'PALM':'PALM','EFID':'EFID','EAST':'EAST','ORWE':'ORWE','JUFO':'JUFO','ZMZA':'ZMZA',
+  'KARO':'KARO','HOD':'HOD','DOMT':'DOMT','PHCI':'PHCI','RMDA':'RMDA','ISPH':'ISPH',
+  'UNIP':'UNIP','MKPH':'MKPH','EIPIC':'EIPIC','ETEL':'ETEL','TELS':'TELS','ITPAC':'ITPAC',
+  'SWDY':'SWDY','HRHO':'HRHO','ESRS':'ESRS','MCDR':'MCDR','SKPC':'SKPC','APPC':'APPC',
+  'OLFI':'OLFI','TALM':'TALM','UPFD':'UPFD','WUFA':'WUFA','YRGN':'YRGN','ZOD':'ZOD',
+  'INEG':'INEG','LUTS':'LUTS','AGRI':'AGRI','CEMI':'CEMI','CHEM':'CHEM','CLHO':'CLHO',
+  'EGAS':'EGAS','ETRA':'ETRA','FERT':'FERT','GAS':'GAS','GLBC':'GLBC','IRON':'IRON',
+  'MINA':'MINA','MNQC':'MNQC','PACK':'PACK','PAPR':'PAPR','PLAS':'PLAS','POLY':'POLY',
+  'RUBR':'RUBR','SAND':'SAND','SHMD':'SHMD','STLT':'STLT','TEXT':'TEXT','TILE':'TILE',
+  'TIMB':'TIMB','AUTO':'AUTO','SPIN':'SPIN','EGTS':'EGTS','THMD':'THMD','ALHE':'ALHE',
+  'HOTL':'HOTL','TOUR':'TOUR','TRVL':'TRVL','ELEC':'ELEC','ENER':'ENER','FINS':'FINS',
   'HOLD':'HOLD','INVS':'INVS','LEAS':'LEAS','REIT':'REIT','SUKN':'SUKN'
 };
 
 const tvLink = (sym) => `https://www.tradingview.com/chart/?symbol=EGX:${sym}`;
 
-// ==================== Mubasher Scraper (3-Layer Fallback) ====================
+// ==================== محرك جلب البيانات المُحسن ====================
+async function fetchWithRetry(url, retries = 2) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await axios.get(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+          'Accept-Language': 'ar-EG,ar;q=0.9,en-US;q=0.8',
+          'Referer': 'https://www.mubasher.info/',
+          'Cache-Control': 'no-cache'
+        },
+        timeout: 12000
+      });
+    } catch (e) {
+      if (i === retries - 1) throw e;
+      await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+    }
+  }
+}
+
 async function fetchMubasher(symbol) {
   const cached = getCached(symbol);
   if (cached) return { ok: true, data: cached };
 
   try {
-    const url = `https://www.mubasher.info/markets/EGX/stocks/${symbol}/`;
-    const { data: html } = await axios.get(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
-        'Referer': 'https://www.mubasher.info/'
-      },
-      timeout: 15000
-    });
+    const { data: html } = await fetchWithRetry(`https://www.mubasher.info/markets/EGX/stocks/${symbol}/`);
+    
+    // استخراج البيانات من Next.js JSON المخفي (أكثر استقراراً من HTML)
+    const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/s);
+    if (!match) throw new Error('Next data missing');
+    
+    const json = JSON.parse(match[1]);
+    const stock = json.props?.pageProps?.data?.stock || json.props?.pageProps?.stockData;
+    if (!stock) throw new Error('Stock payload missing');
 
-    const $ = cheerio.load(html);
-    let price, change, changePct;
+    const price = parseFloat(stock.price || stock.lastPrice);
+    const change = parseFloat(stock.change || stock.priceChange || 0);
+    const changePct = parseFloat(stock.changePercent || stock.priceChangePercent || 0);
+    const volume = parseInt(stock.volume || stock.tradedVolume || '0');
+    const high = parseFloat(stock.high || 0);
+    const low = parseFloat(stock.low || 0);
+    const open = parseFloat(stock.open || 0);
+    const prevClose = parseFloat(stock.prevClose || stock.previousClose || price - change);
 
-    // Layer 1: Open Graph Meta Tags
-    price = parseFloat($('meta[property="og:price:amount"]').attr('content'));
-    change = parseFloat($('meta[property="og:price:change"]').attr('content'));
-    changePct = parseFloat(($('meta[property="og:price:change_percent"]').attr('content') || '').replace('%', ''));
-
-    // Layer 2: Embedded JSON/Data Attributes
-    if (isNaN(price)) {
-      const jsonMatch = html.match(/"price":\s*([\d.]+)/);
-      if (jsonMatch) price = parseFloat(jsonMatch[1]);
-      const chMatch = html.match(/"change":\s*(-?[\d.]+)/);
-      if (chMatch) change = parseFloat(chMatch[1]);
-    }
-
-    // Layer 3: Regex Fallback on visible text
-    if (isNaN(price)) {
-      const textMatch = html.match(/([\d,]+\.\d{2})\s*(جنيه|EGP)/);
-      if (textMatch) price = parseFloat(textMatch[1].replace(',', ''));
-    }
-
-    if (isNaN(price)) throw new Error('Price not found');
-
-    const volumeText = $('[data-testid="volume"] .value, .market-stats__item:contains("حجم التداول") .value').first().text();
-    const volume = parseInt((volumeText || '0').replace(/[^0-9]/g, ''));
-
-    const high = parseFloat($('.market-stats__item:contains("أعلى") .value').text().replace(/,/g, '')) || 0;
-    const low = parseFloat($('.market-stats__item:contains("أدنى") .value').text().replace(/,/g, '')) || 0;
-    const open = parseFloat($('.market-stats__item:contains("افتتاح") .value').text().replace(/,/g, '')) || 0;
-    const prevClose = parseFloat($('.market-stats__item:contains("إغلاق سابق") .value').text().replace(/,/g, '')) || (price - (change || 0));
+    if (isNaN(price)) throw new Error('Invalid price');
 
     const obj = {
-      symbol: symbol.toUpperCase(),
-      price, change: change || 0, changePercent: changePct || 0, volume: volume || 0,
-      high, low, open, prevClose, currency: 'EGP', source: 'Mubasher.info'
+      symbol: symbol.toUpperCase(), price, change, changePercent: changePct, volume,
+      high, low, open, prevClose, currency: 'EGP', source: 'Mubasher (Next.js)'
     };
     setCache(symbol, obj);
     return { ok: true, data: obj };
   } catch (e) {
-    console.warn(`Mubasher failed for ${symbol}, falling back to Yahoo...`);
+    console.warn(`Mubasher failed for ${symbol}, trying Yahoo...`);
     return await fetchYahooFallback(symbol);
   }
 }
 
-// ==================== Yahoo Fallback (للمحافظة على عمل البوت) ====================
 async function fetchYahooFallback(symbol) {
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}.CA?range=1d&interval=1m`;
-    const { data } = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000 });
+    const { data } = await fetchWithRetry(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}.CA?range=1d&interval=1m`);
     const m = data.chart?.result?.[0]?.meta;
-    if (!m || !m.regularMarketPrice) throw new Error('No data');
+    if (!m?.regularMarketPrice) throw new Error('No data');
     const price = m.regularMarketPrice;
     const prev = m.previousClose || price;
     return {
@@ -116,7 +107,7 @@ async function fetchYahooFallback(symbol) {
         volume: m.regularMarketVolume || 0,
         high: m.regularMarketDayHigh || price, low: m.regularMarketDayLow || price,
         open: m.regularMarketDayOpen || price, prevClose: prev,
-        currency: 'EGP', source: 'Yahoo Finance (Fallback)'
+        currency: 'EGP', source: 'Yahoo (Fallback)'
       }
     };
   } catch (e) {
@@ -124,16 +115,7 @@ async function fetchYahooFallback(symbol) {
   }
 }
 
-// ==================== Historical Data for Indicators ====================
-async function fetchHistory(symbol) {
-  try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}.CA?range=1y&interval=1d`;
-    const { data } = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000 });
-    return data.chart?.result?.[0]?.indicators?.quote?.[0]?.close?.filter(v => v !== null) || [];
-  } catch (e) { return []; }
-}
-
-// ==================== Technical Indicators ====================
+// ==================== المؤشرات الفنية ====================
 const calc = {
   sma: (d, p) => d.length < p ? null : d.slice(-p).reduce((a, b) => a + b, 0) / p,
   ema: (d, p) => {
@@ -166,7 +148,13 @@ const calc = {
   }
 };
 
-// ==================== Filter Logic ====================
+async function fetchHistory(symbol) {
+  try {
+    const { data } = await fetchWithRetry(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}.CA?range=1y&interval=1d`);
+    return data.chart?.result?.[0]?.indicators?.quote?.[0]?.close?.filter(v => v !== null) || [];
+  } catch (e) { return []; }
+}
+
 async function runFilter(symbol, liveData) {
   const history = await fetchHistory(symbol);
   if (history.length < 50) return { passed: false, score: 0, details: { reason: 'Insufficient history' } };
@@ -194,22 +182,22 @@ async function runFilter(symbol, liveData) {
   }};
 }
 
-// ==================== Commands ====================
+// ==================== أوامر البوت ====================
 const watchlist = new Map(), srLevels = new Map();
 
 bot.onText(/^\/start$/i, (msg) => {
-  bot.sendMessage(msg.chat.id, 'Hegazy Trade Bot (Mubasher + Fallback)\n\nCommands:\n/price SYMBOL\n/filter SYMBOL\n/scan\n/chart SYMBOL\n/add SYMBOL\n/list\n/support SYMBOL PRICE\n/resistance SYMBOL PRICE\n/alerts');
+  bot.sendMessage(msg.chat.id, 'Hegazy Trade Bot (Stable Mubasher)\n\nCommands:\n/price SYMBOL\n/filter SYMBOL\n/scan\n/chart SYMBOL\n/add SYMBOL\n/list\n/support SYMBOL PRICE\n/resistance SYMBOL PRICE\n/alerts');
 });
 
 bot.onText(/^\/price\s+(\w+)$/i, async (msg, match) => {
   const sym = match[1].toUpperCase();
   if (!STOCKS[sym]) return bot.sendMessage(msg.chat.id, 'Symbol not supported');
-  const load = await bot.sendMessage(msg.chat.id, 'Fetching data...');
+  const load = await bot.sendMessage(msg.chat.id, 'Fetching...');
   const res = await fetchMubasher(sym);
   if (res.error) return bot.editMessageText(res.error, { chat_id: msg.chat.id, message_id: load.message_id });
   const d = res.data;
-  const icon = d.change >= 0 ? '📈' : '';
-  let txt = `📊 ${d.symbol}\n💰 Price: ${d.price.toFixed(2)} ${d.currency}\n${icon} Change: ${d.change.toFixed(2)} (${d.changePercent.toFixed(2)}%)\n Open: ${d.open.toFixed(2)} |  High: ${d.high.toFixed(2)} | 📉 Low: ${d.low.toFixed(2)}\n📦 Vol: ${d.volume.toLocaleString()}\n🌐 Source: ${d.source}`;
+  const icon = d.change >= 0 ? '' : '📉';
+  let txt = `📊 ${d.symbol}\n💰 Price: ${d.price.toFixed(2)} ${d.currency}\n${icon} Change: ${d.change.toFixed(2)} (${d.changePercent.toFixed(2)}%)\n Open: ${d.open.toFixed(2)} | High: ${d.high.toFixed(2)} | Low: ${d.low.toFixed(2)}\n📦 Vol: ${d.volume.toLocaleString()}\n🌐 Source: ${d.source}`;
   bot.editMessageText(txt, { chat_id: msg.chat.id, message_id: load.message_id });
 });
 
@@ -245,14 +233,14 @@ bot.onText(/^\/scan$/i, async (msg) => {
     }
     if (i % 5 === 0) await new Promise(r => setTimeout(r, 1200));
   }
-  let t = '🌍 EGX SCAN\n\n🟢 BUY SIGNALS:\n' + (buys.join(', ') || 'None') + '\n\n WATCH LIST:\n' + (watch.join(', ') || 'None');
+  let t = ' EGX SCAN\n\n🟢 BUY SIGNALS:\n' + (buys.join(', ') || 'None') + '\n\n WATCH LIST:\n' + (watch.join(', ') || 'None');
   bot.editMessageText(t, { chat_id: msg.chat.id, message_id: load.message_id });
 });
 
 bot.onText(/^\/chart\s+(\w+)$/i, (msg, match) => {
   const sym = match[1].toUpperCase();
   if (!STOCKS[sym]) return bot.sendMessage(msg.chat.id, 'Symbol not supported');
-  bot.sendMessage(msg.chat.id, `📈 ${sym} on TradingView:\n${tvLink(sym)}`);
+  bot.sendMessage(msg.chat.id, ` ${sym} on TradingView:\n${tvLink(sym)}`);
 });
 
 bot.onText(/^\/add\s+(\w+)$/i, (msg, match) => {
@@ -261,12 +249,12 @@ bot.onText(/^\/add\s+(\w+)$/i, (msg, match) => {
   if (!watchlist.has(msg.chat.id)) watchlist.set(msg.chat.id, []);
   const list = watchlist.get(msg.chat.id);
   if (!list.includes(sym)) { list.push(sym); bot.sendMessage(msg.chat.id, `✅ Added ${sym}`); }
-  else bot.sendMessage(msg.chat.id, '️ Already exists');
+  else bot.sendMessage(msg.chat.id, '⚠️ Already exists');
 });
 
 bot.onText(/^\/list$/i, (msg) => {
   const list = watchlist.get(msg.chat.id) || [];
-  bot.sendMessage(msg.chat.id, list.length ? '👀 Watchlist:\n' + list.join('\n') : ' Empty');
+  bot.sendMessage(msg.chat.id, list.length ? ' Watchlist:\n' + list.join('\n') : '📭 Empty');
 });
 
 bot.onText(/^\/(support|resistance)\s+(\w+)\s+([\d.]+)$/i, (msg, match) => {
@@ -299,7 +287,7 @@ setInterval(async () => {
         const live = await fetchMubasher(sym);
         if (live.ok) {
           const f = await runFilter(sym, live.data);
-          if (f.passed) bot.sendMessage(cid, ` ${sym} hit filter!\n ${live.data.price.toFixed(2)} EGP\nScore: ${f.score}/5`);
+          if (f.passed) bot.sendMessage(cid, `🚨 ${sym} hit filter!\n💰 ${live.data.price.toFixed(2)} EGP\n📊 Score: ${f.score}/5`);
         }
       } catch(e) { continue; }
       await new Promise(r => setTimeout(r, 1500));
@@ -307,4 +295,4 @@ setInterval(async () => {
   }
 }, 600000);
 
-console.log('✅ Hegazy Trade Bot (Mubasher + Fallback) Started');
+console.log('✅ Hegazy Trade Bot (Stable Mubasher) Started');
