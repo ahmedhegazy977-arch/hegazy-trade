@@ -1,123 +1,142 @@
 const TelegramBot = require('node-telegram-bot-api');
-const yahooFinance = require('yahoo-finance2').default;
-const { RSI, EMA } = require('technicalindicators');
+const axios = require('axios');
 
-// 1. توكن البوت (تم وضعه كما طلبت، لكن يُفضل تغييره من BotFather للأمان)
-const token = '8372311269:AAHYGU-Bu1VnteJwpTUXkNwSMmcDNoUEfcg';
-const bot = new TelegramBot(token, { polling: true });
+const TOKEN = process.env.TOKEN;
+const bot = new TelegramBot(TOKEN, { polling: true });
 
-// 2. قائمة الأسهم (يمكنك إضافة أو حذف أسهم من هنا)
-const WATCHLIST = ['COMI', 'FWRY', 'HRHO', 'ESRS', 'AMOC', 'ORWE', 'ABUK', 'PHDC', 'ETEL', 'SWDY'];
+// قائمة الأسهم المصرية (رموز مباشر)
+const MUBASHER_SYMBOLS = [
+  'EFID','COMI','ETEL','SWDY','HRHO','ESRS','PHDC','TMGH','SODIC','MNHD',
+  'INEG','LUTS','OCDI','FWRY','UNIP','ISPH','EAST','ORWE','EKHO','HELI',
+  'ALEX','CAIB','CIHB','EBNK','EKBN','NSGB','SAIB','LXIN','MOPH','NILE',
+  'QALY','PALM','JUFO','ZMZA','KARO','HOD','DOMT','PHCI','RMDA','MKPH',
+  'EIPIC','TELS','ITPAC','MCDR','SKPC','APPC','OLFI','TALM','UPFD','WUFA',
+  'YRGN','ZOD','AGRI','CEMI','CHEM','CLHO','EGAS','ETRA','FERT','GAS',
+  'GLBC','IRON','MINA','MNQC','PACK','PAPR','PLAS','POLY','RUBR','SAND',
+  'SHMD','STLT','TEXT','TILE','TIMB','AUTO','SPIN','EGTS','THMD','ALHE',
+  'HOTL','TOUR','TRVL','ELEC','ENER','FINS','HOLD','INVS','LEAS','REIT','SUKN'
+];
 
-// 3. دالة التحليل الفني المتقدم
-async function analyzeStock(symbol) {
-    try {
-        // جلب بيانات آخر 65 يوم لضمان حساب EMA 50 و RSI بدقة
-        const history = await yahooFinance.chart(`${symbol}.CA`, {
-            period1: new Date(Date.now() - 65 * 24 * 60 * 60 * 1000),
-            interval: '1d'
-        });
+const tvLink = (sym) => `https://www.tradingview.com/chart/?symbol=EGX:${sym}`;
 
-        if (!history.quotes || history.quotes.length < 50) return null;
+// ==================== جلب السعر من مباشر (نسخة JS خفيفة) ====================
+async function fetchMubasher(symbol) {
+  const url = `https://www.mubasher.info/markets/EGX/stocks/${symbol.toUpperCase()}`;
+  
+  // Headers زي الكود بتاعك بالظبط
+  const headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": "https://www.mubasher.info/",
+    "Connection": "keep-alive"
+  };
 
-        const quotes = history.quotes;
-        const closes = quotes.map(q => q.close).filter(v => v != null);
-        const highs = quotes.map(q => q.high).filter(v => v != null);
-        const lows = quotes.map(q => q.low).filter(v => v != null);
-        const volumes = quotes.map(q => q.volume).filter(v => v != null);
+  try {
+    const { data: html } = await axios.get(url, { headers, timeout: 12000 });
 
-        const currentPrice = closes[closes.length - 1];
-        const currentVolume = volumes[volumes.length - 1];
-        const prevPrice = closes[closes.length - 2];
+    // طريقة 1: البحث عن data-qa (الأكثر استقراراً في مباشر)
+    const qaMatch = html.match(/data-qa="last-price"[^>]*>([\d,]+\.\d+)/);
+    if (qaMatch) return parseFloat(qaMatch[1].replace(/,/g, ''));
 
-        // حساب المؤشرات الفنية
-        const rsi = RSI.calculate({ period: 14, values: closes });
-        const ema50 = EMA.calculate({ period: 50, values: closes });
-        
-        const currentRsi = rsi[rsi.length - 1];
-        const currentEma50 = ema50[ema50.length - 1];
+    // طريقة 2: البحث عن stock-price__value
+    const priceMatch = html.match(/class="[^"]*stock-price__value[^"]*"[^>]*>([\d,]+\.\d+)/);
+    if (priceMatch) return parseFloat(priceMatch[1].replace(/,/g, ''));
 
-        // حساب الدعم والمقاومة (أعلى وأقل سعر في آخر 20 يوم)
-        const recentHighs = highs.slice(-20);
-        const recentLows = lows.slice(-20);
-        const resistance = Math.max(...recentHighs);
-        const support = Math.min(...recentLows);
+    // طريقة 3: Regex عام للبحث عن أي سعر في نطاق معقول (1 - 10000)
+    const genericMatch = html.match(/>([\d]{1,5}\.\d{2})\s*(ج\.م|جنيه|EGP)/);
+    if (genericMatch) return parseFloat(genericMatch[1]);
 
-        // حساب متوسط حجم التداول لآخر 10 أيام
-        const recentVolumes = volumes.slice(-11, -1);
-        const avgVolume = recentVolumes.reduce((a, b) => a + b, 0) / recentVolumes.length;
-
-        let signal = null;
-        let reason = "";
-
-        // ================= الفلاتر المتقدمة =================
-
-        // فلتر 1: اختراق مقاومة حقيقي (Breakout)
-        // الشروط: السعر كسر المقاومة + حجم التداول أعلى من المتوسط بـ 20% + السعر فوق متوسط 50 يوم
-        if (currentPrice >= resistance * 0.99) {
-            if (currentVolume > avgVolume * 1.2 && currentPrice > currentEma50) {
-                signal = "🚀 اختراق مقاومة قوي (Breakout)";
-                reason = `كسر قمة 20 يوم (${resistance.toFixed(2)}) بحجم تداول عالي (${(currentVolume/1000000).toFixed(1)}M) والسعر فوق EMA 50.`;
-            }
-        } 
-        
-        // فلتر 2: ارتداد من دعم قوي (Support Bounce)
-        // الشروط: السعر قريب من الدعم (أقل من 3%) + تشبع بيعي (RSI < 35) + السعر لا يزال فوق متوسط 50 يوم (لتجنب السقوط الحر)
-        else {
-            const distanceToSupport = ((currentPrice - support) / support) * 100;
-            if (distanceToSupport <= 3 && currentRsi < 35 && currentPrice > currentEma50) {
-                signal = "🛡️ ارتداد من دعم قوي (Support Bounce)";
-                reason = `السعر عند الدعم (${support.toFixed(2)}) مع تشبع بيعي (RSI: ${currentRsi.toFixed(1)}) والاتجاه العام صعودي.`;
-            }
-        }
-
-        // إذا لم يحقق الشروط الصارمة، نتجاهله
-        if (!signal) return null;
-
-        return {
-            symbol,
-            price: currentPrice.toFixed(2),
-            support: support.toFixed(2),
-            resistance: resistance.toFixed(2),
-            rsi: currentRsi.toFixed(1),
-            ema50: currentEma50.toFixed(2),
-            volume: (currentVolume / 1000000).toFixed(1) + 'M',
-            signal,
-            reason
-        };
-
-    } catch (error) {
-        return null; // تجاهل الأخطاء الفردية للاستمرار في فحص باقي الأسهم
-    }
+    // لو مفيش سعر واضح
+    return null;
+  } catch (e) {
+    console.log(`Mubasher failed for ${symbol}: ${e.message}`);
+    return null;
+  }
 }
 
-// 4. أمر التليجرام للفحص
-bot.onText(/\/scan/, async (msg) => {
-    const chatId = msg.chat.id;
-    
-    bot.sendMessage(chatId, "⏳ جاري فحص السوق بالفلاتر المتقدمة (Volume + RSI + EMA 50)... قد يستغرق ذلك 10-15 ثانية.");
-
-    const results = await Promise.all(WATCHLIST.map(symbol => analyzeStock(symbol)));
-    const buySignals = results.filter(r => r !== null);
-
-    if (buySignals.length === 0) {
-        bot.sendMessage(chatId, "⚠️ لا توجد إشارات شراء تطابق الفلاتر الصارمة حالياً. السوق يحتاج لمزيد من الانتظار.");
-        return;
-    }
-
-    let message = "🚨 *إشارات الشراء المؤكدة اليوم:* 🚨\n\n";
-    buySignals.forEach(stock => {
-        message += `💎 *${stock.symbol}*\n`;
-        message += `السعر: ${stock.price} | الحجم: ${stock.volume}\n`;
-        message += `الدعم: ${stock.support} | المقاومة: ${stock.resistance}\n`;
-        message += `RSI: ${stock.rsi} | EMA 50: ${stock.ema50}\n`;
-        message += `📌 الإشارة: *${stock.signal}*\n`;
-        message += `📝 السبب: ${stock.reason}\n`;
-        message += `-------------------------\n`;
+// ==================== فاول باك: ياهو (لضمان الاستمرار) ====================
+async function fetchYahooFallback(symbol) {
+  try {
+    const url = `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${symbol}.CA`;
+    const { data } = await axios.get(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      timeout: 8000
     });
+    const res = data.quoteResponse?.result?.[0];
+    if (res?.regularMarketPrice) {
+      return {
+        price: res.regularMarketPrice,
+        change: res.regularMarketChange || 0,
+        changePercent: res.regularMarketChangePercent || 0,
+        volume: res.regularMarketVolume || 0,
+        source: 'Yahoo Fallback'
+      };
+    }
+  } catch (e) { /* ignore */ }
+  return null;
+}
 
-    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+// ==================== دالة الجلب الرئيسية (مباشر أولاً) ====================
+async function fetchPrice(symbol) {
+  // نجرب مباشر الأول
+  const mubasherPrice = await fetchMubasher(symbol);
+  if (mubasherPrice) {
+    return {
+      price: mubasherPrice,
+      change: 0, // مباشر مش دايماً بيبعت التغيير في المكان السهل
+      changePercent: 0,
+      volume: 0,
+      source: 'Mubasher.info (Scraped)'
+    };
+  }
+  
+  // لو فشل، نجرب ياهو
+  const yahoo = await fetchYahooFallback(symbol);
+  if (yahoo) return yahoo;
+  
+  return null;
+}
+
+// ==================== أوامر البوت ====================
+bot.onText(/^\/start$/i, (msg) => {
+  bot.sendMessage(msg.chat.id, '🤖 Hegazy Bot (Mubasher Edition)\n\nCommands:\n/price SYMBOL\n/list\n/chart SYMBOL');
 });
 
-// رسالة تأكيد التشغيل
-console.log("✅ البوت يعمل الآن بنجاح وجاهز لاستقبال الأوامر... 🚀");
+bot.onText(/^\/price\s+(\w+)$/i, async (msg, match) => {
+  const sym = match[1].toUpperCase();
+  if (!MUBASHER_SYMBOLS.includes(sym)) {
+    return bot.sendMessage(msg.chat.id, `❌ ${sym} not supported.\nUse /list to see available symbols.`);
+  }
+  
+  const load = await bot.sendMessage(msg.chat.id, '⏳ Fetching from Mubasher...');
+  const data = await fetchPrice(sym);
+  
+  if (!data) {
+    return bot.editMessageText('❌ Failed to fetch. Market closed or source busy. Try again in 2 mins.', 
+      { chat_id: msg.chat.id, message_id: load.message_id });
+  }
+
+  const icon = data.change >= 0 ? '📈' : '📉';
+  let txt = `📊 ${sym}\n💰 Price: ${data.price.toFixed(2)} EGP\n`;
+  if (data.changePercent !== 0) {
+    txt += `${icon} Change: ${data.change.toFixed(2)} (${data.changePercent.toFixed(2)}%)\n`;
+  }
+  if (data.volume > 0) txt += `📦 Vol: ${data.volume.toLocaleString()}\n`;
+  txt += `🌐 Source: ${data.source}\n🔗 ${tvLink(sym)}`;
+  
+  bot.editMessageText(txt, { chat_id: msg.chat.id, message_id: load.message_id });
+});
+
+bot.onText(/^\/list$/i, (msg) => {
+  const list = MUBASHER_SYMBOLS.slice(0, 30).join(', ') + '...';
+  bot.sendMessage(msg.chat.id, `✅ Supported (${MUBASHER_SYMBOLS.length} stocks):\n${list}`);
+});
+
+bot.onText(/^\/chart\s+(\w+)$/i, (msg, match) => {
+  const sym = match[1].toUpperCase();
+  if (!MUBASHER_SYMBOLS.includes(sym)) return bot.sendMessage(msg.chat.id, '❌ Symbol not supported');
+  bot.sendMessage(msg.chat.id, `📈 ${sym} Live Chart:\n${tvLink(sym)}`);
+});
+
+console.log('✅ Mubasher Bot Started. Ready for Egyptian Market.');
