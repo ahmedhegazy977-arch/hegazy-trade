@@ -1,83 +1,118 @@
 const TelegramBot = require('node-telegram-bot-api');
-const yahooFinance = require('yahoo-finance2').default;
-const { RSI, EMA } = require('technicalindicators');
+const axios = require('axios');
 
-// التوكن: من Railway أو محلي للتجربة
 const TOKEN = process.env.TOKEN || '8372311269:AAHYGU-Bu1VnteJwpTUXkNwSMmcDNoUEfcg';
 const bot = new TelegramBot(TOKEN, { polling: true });
 
-// قائمة الأسهم
 const WATCHLIST = ['COMI', 'FWRY', 'HRHO', 'ESRS', 'AMOC', 'EFID', 'ETEL', 'PHDC', 'TMGH', 'SODIC'];
 
-console.log('🚀 Hegazy Trade Bot Started...');
+console.log('🚀 Hegazy Trade Bot (Lite) Started...');
 
-// ==================== جلب السعر من مباشر (Scraping) ====================
-async function fetchMubasherPrice(symbol) {
+// ==================== المؤشرات الفنية (يدوي - بدون مكتبات) ====================
+const calc = {
+  ema: (data, period) => {
+    if (data.length < period) return null;
+    const k = 2 / (period + 1);
+    let ema = data.slice(0, period).reduce((a, b) => a + b, 0) / period;
+    for (let i = period; i < data.length; i++) {
+      ema = (data[i] - ema) * k + ema;
+    }
+    return ema;
+  },
+  rsi: (closes, period = 14) => {
+    if (closes.length < period + 1) return null;
+    let gains = 0, losses = 0;
+    for (let i = 1; i <= period; i++) {
+      const change = closes[i] - closes[i - 1];
+      if (change > 0) gains += change; else losses -= change;
+    }
+    let avgGain = gains / period, avgLoss = losses / period;
+    for (let i = period + 1; i < closes.length; i++) {
+      const change = closes[i] - closes[i - 1];
+      if (change > 0) {
+        avgGain = (avgGain * (period - 1) + change) / period;
+        avgLoss = (avgLoss * (period - 1)) / period;
+      } else {
+        avgGain = (avgGain * (period - 1)) / period;
+        avgLoss = (avgLoss * (period - 1) - change) / period;
+      }
+    }
+    return avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
+  }
+};
+
+// ==================== جلب البيانات من ياهو (API مباشر) ====================
+async function fetchYahooData(symbol) {
   try {
-    const url = `https://www.mubasher.info/markets/EGX/stocks/${symbol.toUpperCase()}`;
-    const { data: html } = await require('axios').get(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept-Language": "ar-EG,ar;q=0.9"
-      },
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}.CA?range=3mo&interval=1d`;
+    const { data } = await axios.get(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
       timeout: 10000
     });
     
-    const match = html.match(/data-qa="last-price"[^>]*>([\d,]+\.\d+)/);
-    if (match) return parseFloat(match[1].replace(/,/g, ''));
-    return null;
+    const result = data.chart?.result?.[0];
+    if (!result || !result.indicators?.quote?.[0]) return null;
+    
+    const quotes = result.indicators.quote[0];
+    const closes = (quotes.close || []).filter(v => v != null);
+    const volumes = (quotes.volume || []).filter(v => v != null);
+    
+    if (closes.length < 50) return null;
+    
+    return {
+      closes,
+      volumes,
+      currentPrice: result.meta.regularMarketPrice || closes[closes.length - 1],
+      prevClose: result.meta.previousClose || closes[closes.length - 2],
+      volume: volumes[volumes.length - 1] || 0
+    };
   } catch (e) {
+    console.log(`❌ Yahoo fetch failed for ${symbol}: ${e.message}`);
     return null;
   }
 }
 
-// ==================== تحليل السهم (محمي بأخطاء فردية) ====================
+// ==================== تحليل السهم ====================
 async function analyzeStock(symbol) {
   try {
-    // 1. السعر من مباشر
-    let price = await fetchMubasherPrice(symbol);
-    const source = price ? 'Mubasher' : 'Yahoo';
+    const data = await fetchYahooData(symbol);
+    if (!data) return { symbol, error: 'No data available' };
     
-    // 2. البيانات التاريخية من ياهو
-    const history = await yahooFinance.chart(`${symbol}.CA`, {
-      period1: new Date(Date.now() - 70 * 24 * 60 * 60 * 1000),
-      interval: '1d'
-    });
+    const { closes, volumes, currentPrice, prevClose, volume } = data;
     
-    const closes = history.quotes.map(q => q.close).filter(v => v != null);
-    if (closes.length < 50) throw new Error('Insufficient data');
+    // حساب المؤشرات
+    const rsi = calc.rsi(closes);
+    const ema50 = calc.ema(closes, 50);
+    const ema200 = calc.ema(closes, 200);
     
-    // 3. لو مباشر فشل، نستخدم آخر سعر من ياهو
-    if (!price) price = closes[closes.length - 1];
-    
-    // 4. المؤشرات
-    const rsiValues = RSI.calculate({ period: 14, values: closes });
-    const ema50Values = EMA.calculate({ period: 50, values: closes });
-    const currentRsi = rsiValues[rsiValues.length - 1];
-    const currentEma50 = ema50Values[ema50Values.length - 1];
-    
-    // 5. الدعم والمقاومة (آخر 20 يوم)
+    // الدعم والمقاومة (آخر 20 يوم)
     const recent = closes.slice(-20);
     const support = Math.min(...recent);
     const resistance = Math.max(...recent);
     
-    // 6. الفلتر البسيط
+    // متوسط الحجم
+    const avgVol = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+    
+    // الفلتر
     let signal = null;
-    if (price >= resistance * 0.99 && currentRsi < 70) {
+    if (currentPrice >= resistance * 0.99 && volume > avgVol * 1.2 && (!ema50 || currentPrice > ema50)) {
       signal = "🚀 اختراق مقاومة";
-    } else if (price <= support * 1.03 && currentRsi < 40) {
+    } else if (currentPrice <= support * 1.02 && rsi < 40 && (!ema50 || currentPrice > ema50)) {
       signal = "🛡️ ارتداد من دعم";
     }
     
     return {
       symbol,
-      price: price.toFixed(2),
-      rsi: currentRsi?.toFixed(1) || 'N/A',
-      ema50: currentEma50?.toFixed(2) || 'N/A',
+      price: currentPrice.toFixed(2),
+      change: (currentPrice - prevClose).toFixed(2),
+      changePercent: ((currentPrice - prevClose) / prevClose * 100).toFixed(2),
+      rsi: rsi?.toFixed(1) || 'N/A',
+      ema50: ema50?.toFixed(2) || 'N/A',
+      ema200: ema200?.toFixed(2) || 'N/A',
       support: support.toFixed(2),
       resistance: resistance.toFixed(2),
-      signal,
-      source
+      volume: (volume / 1000000).toFixed(2) + 'M',
+      signal
     };
   } catch (err) {
     console.error(`❌ ${symbol} error: ${err.message}`);
@@ -87,93 +122,93 @@ async function analyzeStock(symbol) {
 
 // ==================== الأوامر ====================
 
-// 1. /start
 bot.onText(/^\/start$/i, (msg) => {
   bot.sendMessage(msg.chat.id, 
-    '🤖 *Hegazy Trade Bot*\n\n' +
-    'الأوامر المتاحة:\n' +
-    '/scan - فحص كل الأسهم في القائمة\n' +
-    '/price SYMBOL - سعر سهم معين (مثال: /price COMI)\n' +
-    '/list - عرض الأسهم المدعومة', 
+    '🤖 *Hegazy Trade Bot (Lite)*\n\n' +
+    'الأوامر:\n' +
+    '/scan - فحص السوق\n' +
+    '/price SYMBOL - سعر سهم (مثال: /price COMI)\n' +
+    '/filter SYMBOL - تحليل فني\n' +
+    '/list - الأسهم المدعومة', 
     { parse_mode: 'Markdown' }
   );
 });
 
-// 2. /list
 bot.onText(/^\/list$/i, (msg) => {
-  bot.sendMessage(msg.chat.id, `✅ الأسهم المدعومة:\n${WATCHLIST.join(', ')}`);
+  bot.sendMessage(msg.chat.id, `✅ المدعومة:\n${WATCHLIST.join(', ')}`);
 });
 
-// 3. /price SYMBOL
 bot.onText(/^\/price\s+(\w+)$/i, async (msg, match) => {
-  const symbol = match[1].toUpperCase();
-  if (!WATCHLIST.includes(symbol)) {
-    return bot.sendMessage(msg.chat.id, `❌ ${symbol} غير مدعوم. استخدم /list`);
-  }
+  const sym = match[1].toUpperCase();
+  if (!WATCHLIST.includes(sym)) return bot.sendMessage(msg.chat.id, `❌ ${sym} غير مدعوم`);
   
   const load = await bot.sendMessage(msg.chat.id, '⏳ جاري الجلب...');
-  const result = await analyzeStock(symbol);
+  const data = await fetchYahooData(sym);
   
-  if (result.error) {
-    return bot.editMessageText(`❌ خطأ: ${result.error}`, {
-      chat_id: msg.chat.id, message_id: load.message_id
-    });
-  }
-  
-  let txt = `📊 *${result.symbol}*\n`;
-  txt += `💰 السعر: ${result.price} EGP\n`;
-  txt += `📡 المصدر: ${result.source}\n`;
-  txt += `📈 RSI: ${result.rsi} | EMA50: ${result.ema50}\n`;
-  txt += `🔻 الدعم: ${result.support} | 🔺 المقاومة: ${result.resistance}`;
-  
-  bot.editMessageText(txt, {
-    chat_id: msg.chat.id, message_id: load.message_id, parse_mode: 'Markdown'
+  if (!data) return bot.editMessageText('❌ فشل جلب البيانات', {
+    chat_id: msg.chat.id, message_id: load.message_id
   });
+  
+  const icon = data.currentPrice >= data.prevClose ? '📈' : '📉';
+  const txt = `📊 *${sym}*\n💰 ${data.currentPrice.toFixed(2)} EGP\n${icon} ${data.currentPrice - data.prevClose >= 0 ? '+' : ''}${(data.currentPrice - data.prevClose).toFixed(2)} (${((data.currentPrice - data.prevClose)/data.prevClose*100).toFixed(2)}%)\n📦 حجم: ${(data.volume/1000000).toFixed(2)}M`;
+  
+  bot.editMessageText(txt, { chat_id: msg.chat.id, message_id: load.message_id, parse_mode: 'Markdown' });
 });
 
-// 4. /scan (محمي بـ Promise.allSettled عشان سهم واحد ما يوقفش الكل)
+bot.onText(/^\/filter\s+(\w+)$/i, async (msg, match) => {
+  const sym = match[1].toUpperCase();
+  if (!WATCHLIST.includes(sym)) return bot.sendMessage(msg.chat.id, `❌ ${sym} غير مدعوم`);
+  
+  const load = await bot.sendMessage(msg.chat.id, '🔍 جاري التحليل...');
+  const result = await analyzeStock(sym);
+  
+  if (result.error) return bot.editMessageText(`❌ ${result.error}`, {
+    chat_id: msg.chat.id, message_id: load.message_id
+  });
+  
+  let txt = `🎯 *${result.symbol}*\n💰 ${result.price}\n`;
+  txt += `📊 RSI: ${result.rsi} | EMA50: ${result.ema50}\n`;
+  txt += `🔻 دعم: ${result.support} | 🔺 مقاومة: ${result.resistance}\n`;
+  txt += result.signal ? `\n✅ *${result.signal}*` : '\n⚪ بدون إشارة حالياً';
+  
+  bot.editMessageText(txt, { chat_id: msg.chat.id, message_id: load.message_id, parse_mode: 'Markdown' });
+});
+
 bot.onText(/^\/scan$/i, async (msg) => {
   const chatId = msg.chat.id;
-  await bot.sendMessage(chatId, '⏳ جاري فحص السوق... (15-20 ثانية)');
+  await bot.sendMessage(chatId, '⏳ جاري الفحص... (15 ثانية)');
   
-  // نستخدم allSettled عشان كل سهم يتحل بغض النظر عن التاني
-  const promises = WATCHLIST.map(sym => analyzeStock(sym));
-  const results = await Promise.allSettled(promises);
+  const results = await Promise.allSettled(WATCHLIST.map(analyzeStock));
   
-  const successes = results
-    .filter(r => r.status === 'fulfilled' && r.value && !r.value.error)
+  const signals = results
+    .filter(r => r.status === 'fulfilled' && r.value?.signal)
     .map(r => r.value);
   
-  const signals = successes.filter(s => s.signal);
-  const noSignals = successes.filter(s => !s.signal);
-  const errors = results.filter(r => r.status === 'rejected' || (r.value?.error));
+  const noSignals = results
+    .filter(r => r.status === 'fulfilled' && r.value && !r.value.signal && !r.value.error)
+    .map(r => r.value);
   
   let message = '';
-  
-  if (errors.length > 0) {
-    message += `⚠️ *أخطاء:* ${errors.map(e => e.reason?.message || e.value?.error).join(', ')}\n\n`;
-  }
   
   if (signals.length > 0) {
     message += `🚨 *إشارات شراء (${signals.length})* 🚨\n\n`;
     signals.forEach(s => {
       message += `💎 *${s.symbol}*: ${s.signal}\n`;
       message += `السعر: ${s.price} | RSI: ${s.rsi}\n`;
-      message += `الدعم: ${s.support} | المقاومة: ${s.resistance}\n\n`;
+      message += `دعم: ${s.support} | مقاومة: ${s.resistance}\n\n`;
     });
   } else {
     message += `⚪ *لا توجد إشارات شراء حالياً.*\n\n`;
   }
   
   if (noSignals.length > 0) {
-    message += `📋 *باقي الأسهم (بدون إشارة):*\n`;
+    message += `📋 *باقي الأسهم:*\n`;
     message += noSignals.map(s => `• ${s.symbol}: ${s.price} (RSI: ${s.rsi})`).join('\n');
   }
   
   bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
 });
 
-// 5. /test (للتجربة السريعة)
 bot.onText(/^\/test$/i, async (msg) => {
   await bot.sendMessage(msg.chat.id, '✅ البوت شغال! جاري تحليل COMI...');
   const result = await analyzeStock('COMI');
@@ -182,4 +217,4 @@ bot.onText(/^\/test$/i, async (msg) => {
   });
 });
 
-console.log('✅ Bot is running and listening for commands...');
+console.log('✅ Bot listening for commands...');
